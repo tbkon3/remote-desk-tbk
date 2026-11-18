@@ -60,7 +60,7 @@ async def run_agent(data_dir, port, service_mode=False, parent=None, stop_flag=N
     agent.port = port
     loop = asyncio.get_running_loop()
     app = make_app(agent, port, lambda: agent.stop_event.set())
-    runner = web.AppRunner(app, access_log=None)
+    runner = web.AppRunner(app, access_log=None, shutdown_timeout=2)   # chiusura rapida anche con richieste aperte
     await runner.setup()
     for attempt in range(60):
         try:
@@ -113,9 +113,9 @@ class AgentThread:
     def alive(self):
         return self.thread.is_alive()
 
-    def stop(self):
+    def stop(self, timeout=5):
         self.stop_flag.set()
-        self.thread.join(5)
+        self.thread.join(timeout)
 
 
 # =========================================================================== app utente (tray)
@@ -135,6 +135,8 @@ class App:
         service.elevate("--uninstall-service", user_data=self.data_dir)
 
     def ensure_agent(self):
+        if self.quit.is_set():          # in chiusura: non rilancio nulla
+            return
         if self.agent and self.agent.alive():
             return
         if agent_alive(self.port):
@@ -156,18 +158,38 @@ class App:
         api(self.port, "/api/sessions/close", {})
 
     def exit(self, *_):
+        """Voce "Esci": l'icona sparisce subito, l'agente ha pochi secondi per chiudersi in modo pulito,
+        poi il processo termina comunque (nessun thread di lavoro puo' tenerlo in vita)."""
+        if self.quit.is_set():
+            return
         self.quit.set()
-        if self.agent:
-            self.agent.stop()
+        log.info("chiusura richiesta dall'icona")
+        threading.Thread(target=self._parachute, daemon=True).start()
         if self.icon:
-            self.icon.stop()
+            self.icon.stop()            # run() ritorna nel thread principale, che completa la chiusura
+        else:
+            self.finish()
+
+    def _parachute(self):
+        time.sleep(10)
+        log.warning("chiusura forzata")
+        os._exit(0)
+
+    def finish(self):
+        try:
+            if self.agent:
+                self.agent.stop(timeout=4)
+        finally:
+            logging.shutdown()
+            os._exit(0)
 
     def watchdog(self):
         while not self.quit.is_set():
             try:
                 if self.agent and self.agent.updating:   # il programma di aggiornamento mi sostituira'
                     log.info("aggiornamento in corso: chiudo RemoteDesk")
-                    self.exit()
+                    if self.icon:
+                        self.icon.stop()
                     os._exit(0)
                 self.ensure_agent()
                 st = api(self.port, "/api/public")
@@ -214,7 +236,8 @@ class App:
                 while not self.quit.is_set():
                     time.sleep(1)
             except KeyboardInterrupt:
-                self.exit()
+                self.quit.set()
+            self.finish()
             return
         import pystray
         from PIL import Image
@@ -230,11 +253,14 @@ class App:
             pystray.MenuItem("Rimuovi servizio...", self.remove_service,
                              visible=lambda _: self.service_installed()),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(lambda _: "Nascondi icona" if self.service_installed() else "Esci", self.exit),
+            pystray.MenuItem(lambda _: "Chiudi icona (il servizio resta attivo)" if self.service_installed()
+                             else "Esci da RemoteDesk", self.exit),
         )
         self.icon = pystray.Icon("RemoteDesk", self.images[0], "RemoteDesk", menu)
         threading.Thread(target=self.watchdog, daemon=True).start()
         self.icon.run()
+        self.quit.set()                 # icona chiusa (da "Esci" o da Windows): chiudo tutto
+        self.finish()
 
 
 def main():

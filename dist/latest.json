@@ -1,10 +1,10 @@
 {
- "version": "2.3.1",
- "file": "RemoteDesk-2.3.1.zip",
- "url": "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.3.1.zip",
- "sha256": "90dea67b19bed5cf513e18bf20f61aa266f34de34f6bd3a860c2806598a15ee5",
- "size": 53305980,
+ "version": "2.3.2",
+ "file": "RemoteDesk-2.3.2.zip",
+ "url": "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.3.2.zip",
+ "sha256": "76e054528ff95a3d7f323fb72963b9645108c919a79c63c90b0d9d67b3f3e1b5",
+ "size": 53306324,
  "date": "2026-11-18",
- "notes": "- Piu' server di segnalazione usati insieme: oltre a ntfy.sh, i broker MQTT pubblici EMQX e HiveMQ (TLS). Ogni\n  messaggio parte su tutti e vale il primo che arriva: se un server ha esaurito la quota giornaliera o e' bloccato,\n  la rete continua a funzionare con gli altri. Le configurazioni con solo ntfy.sh vengono aggiornate da sole.\n- Molti meno messaggi: annunci di presenza all'avvio, allo spegnimento e quando una console e' aperta (ogni 10 minuti),\n  piu' uno di sicurezza ogni 30 minuti.\n- Il limite di ntfy viene riconosciuto con precisione: \"troppe richieste\" (attesa e nuovo tentativo) oppure \"quota\n  giornaliera esaurita\". L'avviso compare solo se nessun server e' utilizzabile; in Reti lo stato di ogni server.\n- Script di rimozione del servizio aggiornato anche per le attivita' di aggiornamento.",
- "sig": "FszApQ2OxQHwdV/NGttLIfHT8mkx+aHB7qhCsIshRd59BmcbHR1F1ZavAvrQlMOezYxSw5tbBh1wd6N3AbwmAg=="
+ "notes": "- Corretto: \"Esci\" dall'icona nella barra non chiudeva RemoteDesk. Ora l'icona sparisce subito, le sessioni vengono\n  chiuse in modo ordinato e il programma termina in pochi istanti (al massimo 10 secondi in ogni caso).\n- Con il servizio installato la voce si chiama \"Chiudi icona (il servizio resta attivo)\", per chiarezza.",
+ "sig": "tIsVQo7yJIDRbPKF7O9k2wn2I+5WzIiBSlZXOlpgdXm7fP4t4a4h133dxwZLnJr/pLKGw5Tt7JdUsz17JYX9AQ=="
 }

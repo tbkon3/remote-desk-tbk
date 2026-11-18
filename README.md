@@ -9,8 +9,8 @@ Un'unica cartella portabile (`RemoteDesk.exe` + Python incluso): nessuna install
 - Piu' monitor, file manager, appunti condivisi, audio, chat, registro accessi
 - Connessione diretta tra i PC (WebRTC, cifrata), segnalazione cifrata end-to-end
 
-> **Download:** [**dist/RemoteDesk-2.3.1.zip**](dist/RemoteDesk-2.3.1.zip) (53 MB, pulsante "Download raw"; impronta
-> SHA-256 in [dist/RemoteDesk-2.3.1.zip.sha256](dist/RemoteDesk-2.3.1.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
+> **Download:** [**dist/RemoteDesk-2.3.2.zip**](dist/RemoteDesk-2.3.2.zip) (53 MB, pulsante "Download raw"; impronta
+> SHA-256 in [dist/RemoteDesk-2.3.2.zip.sha256](dist/RemoteDesk-2.3.2.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
 > Su ogni PC estrai **lo zip originale**: non copiare una cartella gia' usata.
 
 ---

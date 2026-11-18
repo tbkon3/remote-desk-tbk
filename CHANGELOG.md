@@ -1,5 +1,10 @@
 # Novita'
 
+## 2.3.2
+- Corretto: "Esci" dall'icona nella barra non chiudeva RemoteDesk. Ora l'icona sparisce subito, le sessioni vengono
+  chiuse in modo ordinato e il programma termina in pochi istanti (al massimo 10 secondi in ogni caso).
+- Con il servizio installato la voce si chiama "Chiudi icona (il servizio resta attivo)", per chiarezza.
+
 ## 2.3.1
 - Piu' server di segnalazione usati insieme: oltre a ntfy.sh, i broker MQTT pubblici EMQX e HiveMQ (TLS). Ogni
   messaggio parte su tutti e vale il primo che arriva: se un server ha esaurito la quota giornaliera o e' bloccato,
