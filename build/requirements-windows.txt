@@ -1,0 +1,6 @@
+aiortc==1.16.0
+aiohttp
+mss
+pystray
+pillow
+cryptography

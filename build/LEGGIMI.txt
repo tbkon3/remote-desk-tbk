@@ -1,0 +1,122 @@
+﻿REMOTEDESK 2.2 - accesso remoto tra le tue macchine, senza server propri
+=========================================================================
+
+CONTENUTO
+  RemoteDesk.exe   avvia il programma (icona nella barra + console)
+  runtime\         Python per Windows gia' incluso: non serve installare nulla
+  app\             il programma
+  I dati (identita' del PC, reti, chiavi, registro) NON stanno in questa cartella:
+    modalita' utente:   %LOCALAPPDATA%\RemoteDesk\data   (privata dell'utente)
+    modalita' servizio: C:\ProgramData\RemoteDesk\data  (solo SYSTEM e Amministratori)
+
+IMPORTANTE: su ogni PC estrai lo ZIP ORIGINALE. Non copiare la cartella
+RemoteDesk da un PC gia' configurato (se lo fai, RemoteDesk se ne accorge e
+crea comunque una nuova identita' per il PC, ma dovrai aggiungerlo alla rete).
+
+PRIMA INSTALLAZIONE (primo PC, il tuo)
+  1. Estrai lo zip in una cartella fissa, es.  C:\RemoteDesk
+  2. Avvia RemoteDesk.exe. Si apre la console con due scelte:
+     "Entra in una rete esistente" oppure "Crea una nuova rete".
+  3. Scegli "Crea una nuova rete": nome rete, tuo utente amministratore, password.
+  4. Annota la CHIAVE DI RETE che viene mostrata (la ritrovi nella sezione "Reti").
+
+AGGIUNGERE UN ALTRO PC
+  1. Estrai lo zip originale sul PC, es. in C:\RemoteDesk, e avvia RemoteDesk.exe
+  2. Scegli "Entra in una rete esistente": nome rete + chiave di rete +
+     utente e password di un AMMINISTRATORE di quella rete.
+     (serve che almeno un altro PC della rete sia acceso)
+  3. Impostazioni > "Installa servizio" (consigliato sui PC da assistere):
+     parte con Windows anche senza utenti collegati e abilita Ctrl+Alt+Canc,
+     finestre UAC e schermata di accesso. Windows chiede conferma da amministratore.
+     Per sicurezza il servizio viene installato in C:\Program Files\RemoteDesk (dove
+     gli utenti normali non possono modificare i file) e parte sempre da li'.
+     Per rimuoverlo: tasto destro sull'icona di RemoteDesk > "Rimuovi servizio...".
+
+PIU' RETI SULLO STESSO PC
+  Un PC puo' far parte di piu' reti contemporaneamente (es. "Ufficio" e
+  "Clienti"). Ogni rete ha chiave, utenti, permessi e registro propri e non
+  vede le altre.
+  - Aggiungere una rete: console > "Reti" > "Aggiungi una rete" (crea o entra).
+    Serve essere collegati come amministratore di una rete di questo PC, cosi'
+    nessuno puo' "regalare" il PC a una rete estranea.
+  - Accesso: si fa il login separatamente in ogni rete (utenti diversi);
+    in "Macchine" le reti in cui non hai fatto l'accesso mostrano un piccolo
+    modulo di login.
+  - Lasciare una rete: "Reti" > "Lascia rete" (se sei admin di quella rete il
+    PC viene tolto anche dal suo registro).
+  - Puoi controllare piu' macchine contemporaneamente, anche di reti diverse:
+    ogni sessione e' una finestra indipendente.
+
+UTENTI E PERMESSI
+  Console > "Utenti e permessi" (solo amministratori, una rete alla volta):
+  - ogni utente ha nome utente e password propri (minimo 10 caratteri)
+  - per ogni macchina: nessun accesso / solo visione / visione + file /
+    solo file / controllo / controllo + file   (oppure "tutte le macchine")
+  - gli amministratori hanno accesso completo e gestiscono gli utenti
+  - le modifiche arrivano a tutte le macchine accese in pochi secondi; se togli
+    un permesso, le sessioni in corso di quell'utente vengono chiuse subito.
+
+USO
+  Console > Macchine: le macchine accese sono in verde. "Controlla", "Guarda"
+  o "File" aprono una finestra ridimensionabile per ogni sessione.
+  Nella finestra di sessione:
+  - mouse, tastiera (anche AltGr / accentate), rotellina, trascinamento
+  - Tasti...: Ctrl+Alt+Canc, Win, Alt+Tab, Gestione attivita', Win+R ...
+  - Schermo intero: cattura anche Esc, Alt+Tab, tasto Windows
+  - Appunti: copia/incolla di testo nei due sensi
+  - File: esplora il PC remoto, scarica (anche cartelle come .zip), carica,
+    rinomina, elimina; oppure trascina file/cartelle sulla finestra
+  - PIU' SCHERMI: menu in alto con Schermo 1, Schermo 2, ...,
+      "Tutti gli schermi (una finestra)"  = tutti affiancati in un'immagine
+      "Tutti gli schermi (una finestra per schermo)" = ogni schermo remoto in
+      una finestra sua; se anche tu hai piu' monitor, Edge/Chrome chiedono il
+      permesso di "gestione finestre" e le mettono una per monitor.
+    All'avvio si vede sempre lo schermo principale del PC remoto.
+  - AUDIO: pulsante "Audio: off/on" (parte spento) per sentire il PC remoto.
+  - CHAT: pulsante "Chat". Sul PC remoto si apre una finestrella in basso a
+    destra dove l'utente legge e risponde (piu' notifica dall'icona).
+  - Invia testo, Blocca PC, blocca mouse/tastiera dell'utente, Riavvia (con il
+    servizio il PC torna raggiungibile da solo), qualita' (fino a 30 fps),
+    adatta / dimensione reale
+  - Se la connessione cade, si ricollega da sola.
+
+REGISTRO ACCESSI (solo amministratori)
+  Console > "Registro accessi" (per rete: ogni rete vede solo i propri eventi):
+  raccoglie lo storico dai PC accesi (90 giorni,
+  conservato su ogni PC): sessioni con durata, file caricati/scaricati, testo
+  degli appunti (primi 300 caratteri), login falliti e accessi negati.
+  Filtri per periodo, tipo, macchina, utente ed esportazione CSV.
+  Attenzione: il testo degli appunti puo' contenere password copiate.
+
+SICUREZZA
+  - Le password non lasciano mai il PC: da utente+password si ricava una chiave
+    di firma (scrypt + Ed25519). Ogni connessione e' firmata dall'utente e ogni
+    risposta e' firmata dalla macchina: niente man-in-the-middle.
+  - Il registro di utenti/permessi/macchine e' firmato da un amministratore:
+    nessuno puo' aggiungersi permessi senza le credenziali di un admin.
+  - Schermo, input e file viaggiano DIRETTI tra i PC, cifrati (WebRTC DTLS-SRTP).
+  - Per farsi trovare le macchine usano ntfy.sh (servizio pubblico gratuito)
+    solo come "bacheca": i messaggi sono cifrati AES-256-GCM con la chiave di
+    rete. Puoi usare un tuo server ntfy in Impostazioni > Rete.
+  - La console funziona solo su 127.0.0.1, con login e protezione anti-CSRF.
+  - Opzione "chiedi conferma" per far accettare ogni accesso all'utente del PC.
+  - Chi e' al PC remoto vede l'icona e una notifica, e puo' scollegare tutti
+    (menu dell'icona o pagina della console, anche senza login).
+
+LIMITI
+  - Latenza: tipicamente 30-80 ms in rete locale, 60-150 ms su Internet (dipende
+    dalla distanza e dalla rete). Lo zero assoluto non esiste; per ridurla:
+    qualita' "Massima fluidita'", rete cablata, nessun server TURN.
+  - Video codificato via software (VP8): ottimo per assistenza e lavoro d'ufficio,
+    non adatto a giochi o video fluidi come Parsec (che usa la GPU).
+  - Audio solo dal PC remoto verso di te (niente microfono). Gli appunti
+    sincronizzano solo testo (per i file usa "File").
+  - Il registro di un PC spento si vede solo quando quel PC torna acceso.
+  - Se due reti molto chiuse non riescono a collegarsi direttamente, configura un
+    server TURN in Impostazioni > Rete.
+  - L'exe non e' firmato: Windows SmartScreen puo' chiedere "Esegui comunque".
+
+RIMOZIONE
+  Icona > "Rimuovi servizio...", togli la spunta all'avvio automatico, chiudi
+  dall'icona, cancella la cartella (e C:\Program Files\RemoteDesk se c'era il
+  servizio). I dati restano in %LOCALAPPDATA%\RemoteDesk e C:\ProgramData\RemoteDesk.

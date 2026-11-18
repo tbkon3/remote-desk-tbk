@@ -1,0 +1,9 @@
+# Per eseguire RemoteDesk dai sorgenti (Windows, oppure Linux X11/macOS per sviluppo e test)
+aiortc>=1.16
+aiohttp>=3.9
+mss>=9
+cryptography>=42
+pystray
+pillow
+pynput; sys_platform != "win32"
+PyAudioWPatch; sys_platform == "win32"

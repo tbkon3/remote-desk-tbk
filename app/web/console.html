@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RemoteDesk</title>
+<link rel="icon" href="/web/icon.png">
+<link rel="stylesheet" href="/web/style.css">
+<style>
+body{display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:14px;padding:10px 18px;background:var(--card);border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px}
+.brand img{width:26px;height:26px}
+.me{display:flex;flex-direction:column;line-height:1.2}
+.me .id{font:600 19px ui-monospace,Consolas,monospace;letter-spacing:1px}
+.sp{flex:1}
+nav{display:flex;gap:2px;flex-wrap:wrap}
+nav button{border:none;background:transparent;padding:8px 11px;border-radius:8px}
+nav button.act{background:var(--hl);color:var(--acc);font-weight:600}
+main{flex:1;overflow:auto;padding:18px}
+.wrap{max-width:1100px;margin:0 auto}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+.bar input{flex:1;min-width:180px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-bottom:22px}
+.m{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.m.off{opacity:.6}
+.m .top{display:flex;align-items:center;gap:8px}
+.m .nm{font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.m .sub{font-size:12px;color:var(--mut)}
+.m .acts{display:flex;gap:6px;flex-wrap:wrap}
+.m .acts button{padding:5px 10px;font-size:13px}
+.nethd{display:flex;align-items:center;gap:8px;margin:4px 0 10px;font-weight:600;font-size:15px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:18px;margin-bottom:14px}
+.card h3{margin:0 0 10px;font-size:15px}
+.narrow{max-width:560px;margin:24px auto}
+.form{display:grid;grid-template-columns:190px 1fr;gap:10px 14px;align-items:center}
+.form label.l{color:var(--mut)}
+.chk{display:flex;gap:8px;align-items:center}
+.empty{color:var(--mut);padding:10px 2px 24px}
+.sess{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.sess:last-child{border:none}
+.ev{font-size:12px;color:var(--mut);font-family:ui-monospace,monospace}
+.pill{font-size:11px;padding:1px 7px;border-radius:99px;background:var(--hl);color:var(--acc)}
+.key{font:600 18px ui-monospace,Consolas,monospace;letter-spacing:1px;padding:10px;border:2px dashed var(--bd);border-radius:10px;text-align:center;user-select:all;word-break:break-all}
+.choice{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:760px;margin:30px auto}
+.choice button{display:flex;flex-direction:column;gap:8px;text-align:left;padding:22px;border-radius:14px;white-space:normal;background:var(--card)}
+.choice button b{font-size:17px}
+.choice button span{color:var(--mut);font-size:13px;line-height:1.5}
+.choice button:hover{border-color:var(--acc);box-shadow:0 4px 18px #2563eb22}
+.warn{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:10px;padding:12px 14px;margin:0 auto 14px;max-width:760px}
+table.t{width:100%;border-collapse:collapse;font-size:13px}
+table.t th,table.t td{padding:7px 8px;border-bottom:1px solid var(--bd);text-align:left;vertical-align:middle}
+table.t th{color:var(--mut);font-weight:500}
+table.t select{padding:3px 6px;font-size:12px}
+.scroll{overflow:auto}
+.inl{display:flex;gap:6px;flex-wrap:wrap;align-items:center;background:var(--card);border:1px dashed var(--bd);border-radius:12px;padding:12px;margin-bottom:22px}
+.inl input{max-width:200px}
+@media (max-width:640px){.form{grid-template-columns:1fr}.choice{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><img src="/web/icon.png" alt="">RemoteDesk</div>
+  <div class="me"><span class="mut" style="font-size:12px" id="meName">...</span><span class="id" id="meId">--- --- ---</span></div>
+  <div class="chk" title="Stato delle reti"><span class="dot" id="netDot"></span><span id="netTxt" class="mut"></span></div>
+  <span class="sp"></span>
+  <nav id="nav" class="hide">
+    <button data-tab="machines" class="act">Macchine</button>
+    <button data-tab="networks">Reti</button>
+    <button data-tab="incoming">Su questo PC <span id="inCount" class="pill hide"></span></button>
+    <button data-tab="users" class="adm">Utenti e permessi</button>
+    <button data-tab="audit" class="adm">Registro accessi</button>
+    <button data-tab="settings" class="adm">Impostazioni</button>
+  </nav>
+  <button id="bLogout" class="hide" title="Esci da tutte le reti">Esci</button>
+</header>
+<main><div class="wrap">
+
+<!-- ============ primo avvio ============ -->
+<section id="v-welcome" class="hide">
+  <div class="warn hide" id="clonedWarn"><b>Questa cartella era stata copiata da un altro PC.</b> Per sicurezza ho creato una nuova identita' per questo computer: aggiungilo alla rete con "Entra in una rete esistente". (La prossima volta copia lo zip originale, non la cartella gia' usata.)</div>
+  <div style="text-align:center;margin-top:20px"><h2 style="margin:0" id="wTitle">Benvenuto in RemoteDesk</h2><p class="mut" id="wSub">Questo PC non fa ancora parte di nessuna rete. Cosa vuoi fare?</p></div>
+  <div class="choice">
+    <button data-start="join"><b>Entra in una rete esistente</b><span>Hai gia' configurato RemoteDesk su un altro PC. Ti servono: nome rete, chiave di rete e un utente amministratore. Serve almeno un PC della rete acceso.</span></button>
+    <button data-start="create"><b>Crea una nuova rete</b><span>Crei una rete nuova e il suo utente amministratore. Otterrai la chiave di rete per aggiungere gli altri PC.</span></button>
+  </div>
+  <div style="text-align:center"><button id="wBack" class="hide">Annulla</button></div>
+</section>
+
+<!-- ============ crea / entra (anche "aggiungi rete") ============ -->
+<section id="v-netform" class="hide"><div class="card narrow">
+  <h3 id="nfTitle"></h3>
+  <p class="mut" id="nfHelp"></p>
+  <div class="form">
+    <label class="l nf-first">Nome di questo PC</label><input id="nfPc" class="nf-first">
+    <label class="l">Nome rete</label><input id="nfNet" placeholder="es. ufficio-rossi">
+    <label class="l jo">Chiave di rete</label><input id="nfKey" class="jo" placeholder="XXXXXX-XXXXXX-XXXXXX-XXXXXX" spellcheck="false">
+    <label class="l" id="nfUserL">Utente amministratore</label><input id="nfUser" autocomplete="off">
+    <label class="l">Password</label><input id="nfPw" type="password" autocomplete="new-password">
+    <label class="l cr">Ripeti password</label><input id="nfPw2" class="cr" type="password" autocomplete="new-password">
+    <span></span><div><button class="pri" id="nfGo"></button> <button id="nfBack">Indietro</button> <span class="mut" id="nfWait"></span></div>
+  </div>
+</div>
+<div class="card narrow hide" id="keyCard"><h3>Rete creata</h3>
+  <p>Questa e' la <b>chiave di rete</b>: ti serve per aggiungere gli altri PC (insieme al tuo utente amministratore). La ritrovi nella sezione "Reti".</p>
+  <div class="key" id="newKey"></div>
+  <div class="row" style="margin-top:12px"><button class="pri" id="keyOk">Ho copiato la chiave, continua</button></div>
+</div></section>
+
+<!-- ============ login ============ -->
+<section id="v-login" class="hide"><div class="card narrow">
+  <h3>Accedi</h3>
+  <p class="mut">Accedi con il tuo utente per vedere e controllare le macchine. Se questo PC e' in piu' reti, potrai accedere alle altre dopo.</p>
+  <div class="form">
+    <label class="l">Rete</label><select id="lgNet"></select>
+    <label class="l">Utente</label><input id="lgUser" autocomplete="username">
+    <label class="l">Password</label><input id="lgPw" type="password" autocomplete="current-password">
+    <span></span><div><button class="pri" id="lgGo">Accedi</button> <span class="mut" id="lgWait"></span></div>
+  </div>
+</div>
+<div class="card narrow" id="pubIncoming"></div></section>
+
+<!-- ============ macchine ============ -->
+<section id="v-machines" class="hide">
+  <div class="bar"><input id="search" placeholder="Cerca per nome, ID, utente o rete..."></div>
+  <div id="machList"></div>
+</section>
+
+<!-- ============ reti ============ -->
+<section id="v-networks" class="hide">
+  <div class="card">
+    <h3>Reti di questo PC</h3>
+    <p class="mut" style="font-size:13px">Il PC puo' far parte di piu' reti contemporaneamente. Ogni rete ha utenti, permessi e chiave propri e non vede le altre.</p>
+    <div class="scroll"><table class="t" id="netTbl"></table></div>
+    <div class="row" style="margin-top:12px"><button class="pri" id="addNet">Aggiungi una rete</button> <span class="mut" id="addNetHint" style="font-size:13px"></span></div>
+  </div>
+</section>
+
+<!-- ============ su questo PC ============ -->
+<section id="v-incoming" class="hide">
+  <div class="card"><h3>Connessioni attive verso questo PC</h3><div id="sessList"></div>
+    <div class="row" style="margin-top:10px"><button class="bad" id="closeAll">Disconnetti tutti</button></div></div>
+  <div class="card"><h3>Registro</h3><div id="events"></div></div>
+</section>
+
+<!-- ============ utenti ============ -->
+<section id="v-users" class="hide">
+  <div class="bar"><label class="mut">Rete:</label><select id="uNet" class="netsel"></select></div>
+  <div class="card">
+    <h3>Utenti</h3>
+    <div class="scroll"><table class="t" id="usersTbl"></table></div>
+    <div class="row" style="margin-top:10px"><button class="pri" id="uNew">Nuovo utente</button></div>
+  </div>
+  <div class="card hide" id="uEdit">
+    <h3 id="uTitle">Nuovo utente</h3>
+    <div class="form">
+      <label class="l">Nome utente</label><input id="uUser" autocomplete="off">
+      <label class="l">Nome visualizzato</label><input id="uName">
+      <label class="l">Password</label><input id="uPw" type="password" autocomplete="new-password" placeholder="min. 10 caratteri">
+      <label class="l">Amministratore</label><label class="chk"><input type="checkbox" id="uAdmin"> accesso completo alle macchine di questa rete e gestione utenti</label>
+    </div>
+    <h3 style="margin-top:16px">Permessi per macchina</h3>
+    <div class="scroll"><table class="t" id="permTbl"></table></div>
+    <div class="row" style="margin-top:12px"><button class="pri" id="uSave">Salva utente</button><button id="uCancel">Annulla</button></div>
+  </div>
+  <div class="card"><h3>Macchine registrate nella rete</h3><div class="scroll"><table class="t" id="machTbl"></table></div></div>
+</section>
+
+<!-- ============ registro accessi ============ -->
+<section id="v-audit" class="hide">
+  <div class="card">
+    <h3>Registro accessi</h3>
+    <p class="mut" style="font-size:13px">Ogni PC conserva il proprio registro per 90 giorni. Qui vengono raccolti quelli dei PC accesi della rete scelta (richiesta firmata, risposte cifrate solo per te). Ogni rete vede solo i propri eventi.</p>
+    <div class="bar">
+      <select id="aNet" class="netsel"></select>
+      <select id="aPeriod"><option value="1">Ultime 24 ore</option><option value="7" selected>Ultimi 7 giorni</option><option value="30">Ultimi 30 giorni</option><option value="90">Ultimi 90 giorni</option></select>
+      <select id="aKind"><option value="">Tutti gli eventi</option><option value="session">Sessioni</option><option value="file">File</option><option value="clip">Appunti</option><option value="fail">Login falliti / accessi negati</option></select>
+      <select id="aMach"><option value="">Tutte le macchine</option></select>
+      <input id="aUser" placeholder="Filtra utente o testo..." style="max-width:200px">
+      <button class="pri" id="aLoad">Carica</button>
+      <button id="aCsv" disabled>Esporta CSV</button>
+    </div>
+    <div class="mut" id="aInfo" style="font-size:13px;margin-bottom:8px"></div>
+    <div class="scroll"><table class="t" id="aTbl"></table></div>
+  </div>
+</section>
+
+<!-- ============ impostazioni ============ -->
+<section id="v-settings" class="hide">
+  <div class="card">
+    <h3>Questo PC</h3>
+    <div class="form">
+      <label class="l">Nome del PC</label><input data-s="name">
+      <label class="l">Connessioni in ingresso</label><label class="chk"><input type="checkbox" data-s="accept_incoming"> consenti agli utenti autorizzati di collegarsi</label>
+      <label class="l">Conferma</label><label class="chk"><input type="checkbox" data-s="ask_confirm"> chiedi conferma a chi usa il PC (30 s, poi rifiuta)</label>
+      <label class="l">Controllo</label><label class="chk"><input type="checkbox" data-s="allow_control"> consenti mouse e tastiera</label>
+      <label class="l">File</label><label class="chk"><input type="checkbox" data-s="allow_files"> consenti trasferimento file</label>
+      <label class="l">Appunti</label><label class="chk"><input type="checkbox" data-s="allow_clipboard"> consenti sincronizzazione appunti</label>
+      <label class="l">Cartella file ricevuti</label><input data-s="incoming_dir" id="inDir">
+    </div>
+  </div>
+  <div class="card">
+    <h3>Avvio automatico</h3>
+    <div class="form">
+      <label class="l">Avvio con l'utente</label>
+      <label class="chk"><input type="checkbox" id="autostart"> avvia RemoteDesk quando accedo a Windows</label>
+      <label class="l">Servizio di sistema</label>
+      <div><div id="svcTxt" class="mut" style="margin-bottom:8px"></div><button id="svcBtn">Installa servizio</button></div>
+    </div>
+    <p class="mut" style="margin-top:12px;font-size:13px">La modalita' servizio (consigliata sui PC da assistere) fa partire RemoteDesk con Windows anche senza nessun utente collegato e abilita <b>Ctrl+Alt+Canc</b>, finestre <b>UAC</b> e <b>schermata di accesso</b>. Richiede i diritti di amministratore di Windows; estrai prima il pacchetto in una cartella fissa (es. <code>C:\RemoteDesk</code>).</p>
+  </div>
+  <div class="card">
+    <h3>Connessione</h3>
+    <div class="form">
+      <label class="l">Server di segnalazione</label><input data-s="signal">
+      <label class="l">TURN url</label><input data-s="turn_url" placeholder="turn:host:3478 (facoltativo)">
+      <label class="l">TURN utente</label><input data-s="turn_user">
+      <label class="l">TURN password</label><input data-s="turn_pass" type="password">
+    </div>
+    <p class="mut" style="font-size:13px">Il server di segnalazione riceve solo messaggi cifrati e serve a far trovare le macchine tra loro (deve essere lo stesso su tutti i PC); lo schermo viaggia diretto tra i PC.</p>
+  </div>
+  <p class="mut" id="ver" style="text-align:center"></p>
+</section>
+
+</div></main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let P = null, S = null, tab = 'machines', view = null, formMode = null, showingKey = false, editing = null;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fid = id => esc(String(id ?? '').replace(/(\d{3})(?=\d)/g, '$1 '));
+function toast(t, ms=3500){ const d = document.createElement('div'); d.className='toast'; d.textContent=t; document.body.append(d); setTimeout(()=>d.remove(), ms) }
+async function post(p, b){ const r = await fetch(p, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b||{})}); return r.json() }
+function ago(t){ const s = Math.max(0, Date.now()/1000 - t); if (s < 90) return 'adesso'; if (s < 3600) return Math.round(s/60)+' min fa'; if (s < 86400) return Math.round(s/3600)+' ore fa'; return Math.round(s/86400)+' giorni fa' }
+const RLABEL = {view:'visione', control:'controllo', files:'file'};
+const MODES = {control:'controllo', view:'visione', files:'file'};
+
+function show(v){ view = v; document.querySelectorAll('section').forEach(s => s.classList.toggle('hide', s.id !== 'v-' + v)) }
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.tab; formMode = null; render() });
+
+function openSession(nid, id, name, mode='control'){
+  const w = Math.min(screen.availWidth, 1400), h = Math.min(screen.availHeight, 900);
+  const url = `/session?net=${nid}&id=${encodeURIComponent(id)}&name=${encodeURIComponent(name||'')}&mode=${mode}`;
+  const win = window.open(url, 'rd_' + id + '_' + mode, `popup,width=${w},height=${h}`);
+  if (win) win.focus(); else location.href = url;
+}
+
+function renderHeader(){
+  $('meId').textContent = P.me.fid; $('meName').textContent = P.me.name + ' - ID di questo PC';
+  const n = P.networks.length, on = P.networks.filter(x => x.state === 'online').length;
+  $('netDot').className = 'dot ' + (!n ? 'bad' : on === n ? 'on' : 'warn');
+  $('netTxt').textContent = !n ? 'nessuna rete' : n === 1 ? `rete "${P.networks[0].name}": ${P.networks[0].state}` : `${on}/${n} reti online`;
+  document.title = 'RemoteDesk - ' + P.me.fid;
+  $('nav').classList.toggle('hide', !P.logged || !!formMode); $('bLogout').classList.toggle('hide', !P.logged);
+  document.querySelectorAll('.adm').forEach(e => e.classList.toggle('hide', !P.admin_any));
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('act', b.dataset.tab === tab));
+}
+
+function incomingHtml(){
+  const ss = P.sessions.filter(s => s.connected);
+  return ss.length ? ss.map(s => `<div class="sess"><span class="dot on"></span><b>${esc(s.user)}</b>
+     <span class="mut">da ${esc(s.peer_name)} (ID ${fid(s.peer)}) &middot; rete ${esc(s.net)} &middot; ${esc(MODES[s.mode] || s.mode)} &middot; da ${ago(s.since)}</span><span class="sp"></span>
+     <button class="bad" data-sid="${esc(s.sid)}">Disconnetti</button></div>`).join('') : '<p class="mut">Nessuno e\' collegato a questo PC.</p>';
+}
+
+function render(){
+  if (!P) return;
+  renderHeader();
+  if (formMode) { show('netform'); return }
+  if (!P.configured) {
+    show('welcome'); $('clonedWarn').classList.toggle('hide', !P.cloned); $('wBack').classList.add('hide');
+    $('wTitle').textContent = 'Benvenuto in RemoteDesk'; $('wSub').textContent = 'Questo PC non fa ancora parte di nessuna rete. Cosa vuoi fare?';
+    return;
+  }
+  if (!P.logged) {
+    show('login');
+    const sel = $('lgNet'), cur = sel.value;
+    sel.innerHTML = P.networks.map(n => `<option value="${n.nid}">${esc(n.name)}</option>`).join('');
+    if (cur && P.networks.some(n => n.nid === cur)) sel.value = cur;
+    $('pubIncoming').innerHTML = '<h3>Chi e\' collegato a questo PC</h3>' + incomingHtml();
+    return;
+  }
+  if (!S) return;
+  if (!P.admin_any && ['users', 'settings', 'audit'].includes(tab)) tab = 'machines';
+  show(tab);
+  const ss = P.sessions.filter(s => s.connected);
+  $('inCount').textContent = ss.length; $('inCount').classList.toggle('hide', !ss.length);
+  fillNetSelects();
+  if (tab === 'machines') renderMachines();
+  if (tab === 'networks') renderNetworks();
+  if (tab === 'incoming') {
+    $('sessList').innerHTML = incomingHtml();
+    $('events').innerHTML = P.events.slice().reverse().map(e => `<div class="ev">${new Date(e.t*1000).toLocaleString()} - ${esc(e.text)}</div>`).join('') || '<p class="mut">Vuoto</p>';
+  }
+  if (tab === 'users') renderUsers();
+  if (tab === 'audit') renderAuditMachines();
+  if (tab === 'settings') renderSettings();
+}
+
+function fillNetSelects(){
+  const nets = Object.entries(S.admin_nets);
+  document.querySelectorAll('.netsel').forEach(sel => {
+    const cur = sel.value;
+    const html = nets.map(([nid, n]) => `<option value="${nid}">${esc(n.name)}</option>`).join('');
+    if (sel.dataset.h !== html) { sel.innerHTML = html; sel.dataset.h = html; if (cur && S.admin_nets[cur]) sel.value = cur }
+  });
+}
+
+// ---------------- macchine (raggruppate per rete)
+function renderMachines(){
+  const q = $('search').value.trim().toLowerCase();
+  let html = '';
+  for (const n of P.networks) {
+    const dot = `<span class="dot ${n.state === 'online' ? 'on' : 'warn'}"></span>`;
+    if (!n.login) {
+      html += `<div class="nethd">${dot} Rete ${esc(n.name)}</div>
+        <div class="inl" data-nid="${n.nid}"><span class="mut">Non hai effettuato l'accesso a questa rete:</span>
+        <input placeholder="utente" class="iu" autocomplete="username"><input type="password" placeholder="password" class="ip" autocomplete="current-password">
+        <button class="pri" data-login="${n.nid}">Accedi</button></div>`;
+      continue;
+    }
+    const list = S.machines.filter(m => m.nid === n.nid && (!q || [m.name, m.id, m.user, m.os, m.net].join(' ').toLowerCase().includes(q)));
+    html += `<div class="nethd">${dot} Rete ${esc(n.name)} <span class="mut" style="font-weight:400;font-size:13px">- accesso come ${esc(n.login.name || n.login.user)}${n.login.admin ? ' (admin)' : ''}</span></div>`;
+    html += list.length ? '<div class="grid">' + list.map(m => {
+      const r = new Set(m.rights), on = m.online;
+      const btn = (a, label, cls='') => r.has(a) ? `<button class="${cls}" data-a="${a}" ${on ? '' : 'disabled'}>${label}</button>` : '';
+      return `<div class="m ${on ? '' : 'off'}" data-nid="${m.nid}" data-id="${esc(m.id)}" data-name="${esc(m.name)}">
+        <div class="top"><span class="dot ${on ? 'on' : ''}"></span><span class="nm" title="${esc(m.name)}">${esc(m.name || 'senza nome')}</span>
+          ${m.service ? '<span class="pill" title="Servizio di sistema: Ctrl+Alt+Canc e UAC disponibili">servizio</span>' : ''}</div>
+        <div class="sub">ID ${fid(m.id)}${m.os ? ' &middot; ' + esc(m.os) : ''}</div>
+        <div class="sub">${on ? (esc(m.user || '') + ((Number(m.sessions) | 0) ? ` &middot; ${Number(m.sessions) | 0} sessioni` : '') + (m.accept === false ? ' &middot; accesso disabilitato' : '')) : (m.last_seen ? 'offline, visto ' + ago(m.last_seen) : 'offline')}</div>
+        <div class="acts">${btn('control', 'Controlla', 'pri')}${btn('view', 'Guarda')}${btn('files', 'File')}</div>
+      </div>`}).join('') + '</div>'
+      : `<div class="empty">${q ? 'Nessun risultato.' : 'Nessuna macchina su cui hai permessi in questa rete.'}</div>`;
+  }
+  $('machList').innerHTML = html;
+}
+$('machList').addEventListener('click', async ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  if (b.dataset.login) {
+    const box = b.closest('.inl');
+    b.disabled = true;
+    const r = await post('/api/login', {nid:b.dataset.login, user:box.querySelector('.iu').value, password:box.querySelector('.ip').value});
+    b.disabled = false;
+    if (r.error) toast(r.error); else refresh();
+    return;
+  }
+  const c = b.closest('.m'); if (c) openSession(c.dataset.nid, c.dataset.id, c.dataset.name, b.dataset.a);
+});
+$('machList').addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.classList.contains('ip')) ev.target.closest('.inl').querySelector('button').click() });
+$('machList').addEventListener('dblclick', ev => {
+  const c = ev.target.closest('.m:not(.off)'); if (!c) return;
+  const m = S.machines.find(x => x.id === c.dataset.id && x.nid === c.dataset.nid); if (!m) return;
+  openSession(m.nid, m.id, m.name, m.rights.includes('control') ? 'control' : m.rights.includes('view') ? 'view' : 'files');
+});
+$('search').oninput = () => renderMachines();
+
+// ---------------- reti
+function renderNetworks(){
+  $('netTbl').innerHTML = '<tr><th>Rete</th><th>Stato</th><th>Il tuo accesso</th><th>Chiave di rete</th><th></th></tr>' + P.networks.map(n => {
+    const adm = S.admin_nets[n.nid];
+    return `<tr><td><b>${esc(n.name)}</b></td><td><span class="dot ${n.state === 'online' ? 'on' : 'warn'}"></span> ${esc(n.state)}${n.registered ? '' : ' <span class="pill">PC rimosso dalla rete</span>'}${n.conflict ? ' <span class="pill" style="background:#fee2e2;color:#991b1b" title="Due versioni diverse del registro utenti: lascia la rete e rientra con un amministratore attuale">registro in conflitto</span>' : ''}</td>
+      <td>${n.login ? esc(n.login.name || n.login.user) + (n.login.admin ? ' (admin)' : '') : '<span class="mut">non effettuato</span>'}</td>
+      <td>${adm ? `<span class="key" style="display:inline-block;font-size:12px;padding:3px 8px" data-key="${esc(adm.key)}">••••••</span> <button data-show="${n.nid}">Mostra</button>` : '<span class="mut">solo admin</span>'}</td>
+      <td style="text-align:right;white-space:nowrap">${n.login ? `<button data-out="${n.nid}">Esci</button>` : ''} <button class="ghost" data-leave="${n.nid}">Lascia rete</button></td></tr>`;
+  }).join('');
+  $('addNet').disabled = !P.can_add_network;
+  $('addNetHint').textContent = P.can_add_network ? '' : 'Per aggiungere una rete serve l\'accesso come amministratore di una rete di questo PC.';
+}
+$('netTbl').onclick = async ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  if (b.dataset.show) { const k = b.closest('tr').querySelector('[data-key]'); k.textContent = k.dataset.key; b.remove() }
+  if (b.dataset.out) { await post('/api/logout', {nid:b.dataset.out}); refresh() }
+  if (b.dataset.leave) {
+    const n = P.networks.find(x => x.nid === b.dataset.leave);
+    if (!confirm(`Togliere questo PC dalla rete "${n.name}"?\n\nGli utenti di quella rete non potranno piu' collegarsi qui. Per rientrare servira' di nuovo chiave di rete e un amministratore.`)) return;
+    const r = await post('/api/networks/leave', {nid:b.dataset.leave});
+    if (r.error) toast(r.error); else { toast('Uscito dalla rete ' + n.name); refresh() }
+  }
+};
+$('addNet').onclick = () => openForm(null);
+
+// ---------------- form crea / entra
+function openForm(mode){
+  formMode = mode || 'choose';
+  if (formMode === 'choose') {
+    formMode = null; show('welcome'); $('nav').classList.add('hide'); view = 'welcome-add';
+    $('wTitle').textContent = 'Aggiungi una rete'; $('wSub').textContent = "Questo PC restera' anche nelle reti attuali.";
+    $('wBack').classList.remove('hide'); $('clonedWarn').classList.add('hide'); return;
+  }
+  const first = !P.configured, join = formMode === 'join';
+  $('nfTitle').textContent = join ? (first ? 'Entra in una rete esistente' : 'Aggiungi questo PC a un\'altra rete') : 'Crea una nuova rete';
+  $('nfHelp').innerHTML = join
+    ? 'Inserisci il <b>nome rete</b> e la <b>chiave di rete</b> (le trova un amministratore nella sezione "Reti" di un PC gia\' configurato) e le credenziali di un <b>amministratore</b> di quella rete. Serve almeno un altro PC della rete acceso.'
+    : 'Crei una rete nuova e il suo primo <b>utente amministratore</b>. Gli utenti di ogni rete sono separati: puoi usare lo stesso nome utente in reti diverse, con password diverse.';
+  document.querySelectorAll('.jo').forEach(e => e.classList.toggle('hide', !join));
+  document.querySelectorAll('.cr').forEach(e => e.classList.toggle('hide', join));
+  document.querySelectorAll('.nf-first').forEach(e => e.classList.toggle('hide', !first));
+  $('nfUserL').textContent = join ? 'Amministratore della rete' : 'Il tuo utente amministratore';
+  $('nfGo').textContent = join ? 'Entra nella rete' : 'Crea rete';
+  ['nfNet','nfKey','nfUser','nfPw','nfPw2'].forEach(id => $(id).value = '');
+  if (first && !$('nfPc').value) $('nfPc').value = P.me.name;
+  $('keyCard').classList.add('hide'); $('nfGo').closest('.card').classList.remove('hide');
+  render();
+}
+document.querySelectorAll('[data-start]').forEach(b => b.onclick = () => openForm(b.dataset.start));
+$('nfBack').onclick = () => { formMode = null; view = null; render() };
+$('wBack').onclick = () => { view = null; render() };
+$('nfGo').onclick = async () => {
+  if (formMode === 'create' && $('nfPw').value !== $('nfPw2').value) { toast('Le password non coincidono'); return }
+  $('nfGo').disabled = true; $('nfWait').textContent = formMode === 'join' ? 'Cerco la rete... (fino a 25 secondi)' : 'Creo le chiavi...';
+  const r = await post('/api/setup', {action:formMode, pcname:P.configured ? '' : $('nfPc').value, network:$('nfNet').value,
+                                      key:$('nfKey').value, user:$('nfUser').value, password:$('nfPw').value});
+  $('nfGo').disabled = false; $('nfWait').textContent = '';
+  if (r.error) { toast(r.error, 7000); return }
+  if (r.key) { showingKey = true; $('newKey').textContent = r.key; $('keyCard').classList.remove('hide'); $('nfGo').closest('.card').classList.add('hide'); return }
+  toast('PC aggiunto alla rete'); formMode = null; tab = 'machines'; refresh();
+};
+$('keyOk').onclick = () => { showingKey = false; formMode = null; tab = 'machines'; refresh() };
+
+// ---------------- login
+$('lgGo').onclick = async () => {
+  $('lgGo').disabled = true; $('lgWait').textContent = 'Verifica...';
+  const r = await post('/api/login', {nid:$('lgNet').value, user:$('lgUser').value, password:$('lgPw').value});
+  $('lgGo').disabled = false; $('lgWait').textContent = ''; $('lgPw').value = '';
+  if (r.error) { toast(r.error); return }
+  refresh();
+};
+$('lgPw').onkeydown = e => { if (e.key === 'Enter') $('lgGo').click() };
+$('bLogout').onclick = async () => { await post('/api/logout'); S = null; filled = false; refresh() };
+
+// ---------------- utenti
+const curNet = () => S.admin_nets[$('uNet').value];
+function renderUsers(){
+  const R = curNet(); if (!R) return;
+  const me = (P.networks.find(n => n.nid === $('uNet').value) || {}).login || {};
+  $('usersTbl').innerHTML = '<tr><th>Utente</th><th>Nome</th><th>Ruolo</th><th>Permessi</th><th></th></tr>' +
+    Object.entries(R.users).sort().map(([u, x]) => {
+      const perms = x.admin ? 'tutte le macchine' : Object.entries(x.perms).map(([mid, r]) =>
+        `${mid === '*' ? '<b>tutte</b>' : esc((R.machines[mid] || {}).name || fid(mid))}: ${r.map(k => RLABEL[k]).join(', ')}`).join('<br>') || '<span class="mut">nessuno</span>';
+      return `<tr><td><b>${esc(u)}</b></td><td>${esc(x.name)}</td><td>${x.admin ? '<span class="pill">admin</span>' : 'utente'}</td><td style="font-size:12px">${perms}</td>
+        <td style="text-align:right;white-space:nowrap"><button data-edit="${esc(u)}">Modifica</button> ${u === me.user ? '' : `<button class="ghost" data-del="${esc(u)}">Elimina</button>`}</td></tr>`;
+    }).join('');
+  $('machTbl').innerHTML = '<tr><th>Macchina</th><th>ID</th><th>Stato</th><th></th></tr>' +
+    Object.entries(R.machines).sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '')).map(([mid, m]) =>
+      `<tr><td>${esc(m.name)}</td><td>${fid(mid)}</td><td><span class="dot ${m.online || mid === P.me.id ? 'on' : ''}"></span> ${mid === P.me.id ? 'questo PC' : m.online ? 'online' : 'offline'}</td>
+       <td style="text-align:right">${mid === P.me.id ? '' : `<button class="ghost" data-mdel="${esc(mid)}">Rimuovi dalla rete</button>`}</td></tr>`).join('');
+}
+$('uNet').onchange = () => { $('uEdit').classList.add('hide'); editing = null; renderUsers() };
+function permOptions(cur){
+  const v = cur.includes('files') && cur.includes('control') ? 'control,files' : cur.includes('control') ? 'control' :
+            cur.includes('files') && cur.includes('view') ? 'view,files' : cur.includes('view') ? 'view' : cur.includes('files') ? 'files' : '';
+  return [['', 'nessun accesso'], ['view', 'solo visione'], ['view,files', 'visione + file'], ['files', 'solo file'], ['control', 'controllo'], ['control,files', 'controllo + file']]
+    .map(([k, l]) => `<option value="${k}" ${k === v ? 'selected' : ''}>${l}</option>`).join('');
+}
+function editUser(u){
+  const R = curNet(), x = u ? R.users[u] : {name:'', admin:false, perms:{}};
+  editing = u || '';
+  $('uEdit').classList.remove('hide'); $('uTitle').textContent = (u ? 'Modifica ' + u : 'Nuovo utente') + ' - rete ' + R.name;
+  $('uUser').value = u || ''; $('uUser').disabled = !!u; $('uName').value = x.name || ''; $('uPw').value = '';
+  $('uPw').placeholder = u ? '(lascia vuoto per non cambiarla)' : 'min. 10 caratteri'; $('uAdmin').checked = !!x.admin;
+  const rows = [['*', '<b>Tutte le macchine</b> di questa rete (anche quelle aggiunte in futuro)']].concat(
+    Object.entries(R.machines).map(([mid, m]) => [mid, esc(m.name) + ' <span class="mut">' + fid(mid) + '</span>']));
+  $('permTbl').innerHTML = '<tr><th>Macchina</th><th>Permesso</th></tr>' + rows.map(([mid, label]) =>
+    `<tr><td>${label}</td><td><select data-m="${esc(mid)}">${permOptions(x.perms[mid] || [])}</select></td></tr>`).join('');
+  $('permTbl').classList.toggle('hide', $('uAdmin').checked);
+  $('uEdit').scrollIntoView({behavior:'smooth'});
+}
+$('uAdmin').onchange = () => $('permTbl').classList.toggle('hide', $('uAdmin').checked);
+$('uNew').onclick = () => editUser(null);
+$('uCancel').onclick = () => { $('uEdit').classList.add('hide'); editing = null };
+$('uSave').onclick = async () => {
+  const perms = {};
+  document.querySelectorAll('#permTbl select').forEach(s => { if (s.value) perms[s.dataset.m] = s.value.split(',') });
+  $('uSave').disabled = true;
+  const r = await post('/api/users/save', {nid:$('uNet').value, user:$('uUser').value, name:$('uName').value, password:$('uPw').value, admin:$('uAdmin').checked, perms});
+  $('uSave').disabled = false;
+  if (r.error) { toast(r.error); return }
+  toast('Utente salvato e distribuito alle macchine della rete'); $('uEdit').classList.add('hide'); editing = null; refresh();
+};
+$('usersTbl').onclick = async ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  if (b.dataset.edit) editUser(b.dataset.edit);
+  if (b.dataset.del && confirm(`Eliminare l'utente ${b.dataset.del}? Le sue sessioni verranno chiuse.`)) {
+    const r = await post('/api/users/delete', {nid:$('uNet').value, user:b.dataset.del}); if (r.error) toast(r.error); refresh();
+  }
+};
+$('machTbl').onclick = async ev => {
+  const b = ev.target.closest('button[data-mdel]'); if (!b) return;
+  if (confirm('Rimuovere questa macchina dalla rete? Non sara\' piu\' raggiungibile da questa rete finche\' non viene aggiunta di nuovo.')) {
+    const r = await post('/api/machines/delete', {nid:$('uNet').value, id:b.dataset.mdel}); if (r.error) toast(r.error); refresh();
+  }
+};
+
+// ---------------- registro accessi
+const KIND = {session_start:'Sessione iniziata', session_end:'Sessione terminata', file_in:'File caricato sul PC',
+  file_out:'File scaricato dal PC', file_del:'File eliminato', file_ren:'File rinominato', file_mkdir:'Cartella creata', login_fail:'Login fallito', auth_fail:'Accesso negato', clip_in:'Appunti incollati sul PC', clip_out:'Appunti copiati dal PC'};
+const KGROUP = {session:['session_start','session_end'], file:['file_in','file_out','file_del','file_ren','file_mkdir'], clip:['clip_in','clip_out'], fail:['login_fail','auth_fail']};
+let auditRows = [];
+const dur = s => s >= 3600 ? Math.floor(s/3600) + 'h ' + Math.round(s%3600/60) + 'm' : s >= 60 ? Math.round(s/60) + ' min' : s + ' s';
+const hsize = n => n == null ? '' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : (n/1048576).toFixed(1) + ' MB';
+function detail(e){
+  switch (e.k) {
+    case 'session_start': return `${MODES[e.mode] || e.mode} da ${e.peer_name || fid(e.peer)}`;
+    case 'session_end': return `${MODES[e.mode] || e.mode} da ${e.peer_name || fid(e.peer)}, durata ${dur(e.dur || 0)}`;
+    case 'file_in': case 'file_out': return `${e.path} (${hsize(e.size)})${e.ok === false ? ' - NON completato' + (e.why ? ': ' + e.why : '') : ''}`;
+    case 'file_del': case 'file_mkdir': return e.path;
+    case 'file_ren': return `${e.path} -> ${e.dest}`;
+    case 'login_fail': return 'sulla console di questo PC';
+    case 'auth_fail': return `${e.why || ''} - da ${e.peer_name || fid(e.peer || '')}`;
+    case 'clip_in': case 'clip_out': return `"${e.text || ''}"${e.len > (e.text || '').length ? ' ... (' + e.len + ' caratteri)' : ''}`;
+  }
+  return '';
+}
+function renderAuditMachines(){
+  const R = S.admin_nets[$('aNet').value]; if (!R) return;
+  const html = '<option value="">Tutte le macchine</option>' + Object.entries(R.machines).map(([mid, m]) => `<option value="${mid}">${esc(m.name)} (${fid(mid)})</option>`).join('');
+  if ($('aMach').dataset.h !== html) { const cur = $('aMach').value; $('aMach').innerHTML = html; $('aMach').dataset.h = html; $('aMach').value = cur }
+}
+$('aNet').onchange = () => { auditRows = []; renderAudit(); renderAuditMachines(); $('aInfo').textContent = '' };
+$('aLoad').onclick = async () => {
+  $('aLoad').disabled = true; $('aInfo').textContent = 'Raccolta dai PC della rete... (circa 8 secondi)';
+  const since = Math.floor(Date.now()/1000) - (+$('aPeriod').value) * 86400;
+  const r = await post('/api/audit', {nid:$('aNet').value, since});
+  $('aLoad').disabled = false;
+  if (r.error) { $('aInfo').textContent = r.error; return }
+  auditRows = [];
+  for (const [mid, res] of Object.entries(r.results)) for (const e of res.entries) auditRows.push({...e, mid, mname: res.name || r.machines[mid] || fid(mid)});
+  auditRows.sort((a, b) => b.t - a.t);
+  const missing = Object.keys(r.machines).filter(mid => !r.results[mid]).map(mid => r.machines[mid] || fid(mid));
+  $('aInfo').textContent = `${Object.keys(r.results).length} PC hanno risposto` + (missing.length ? `; non raggiungibili ora: ${missing.join(', ')} (i loro dati restano salvati su quei PC)` : '');
+  renderAudit(); $('aCsv').disabled = false;
+};
+function filteredAudit(){
+  const k = $('aKind').value, mid = $('aMach').value, q = $('aUser').value.trim().toLowerCase();
+  return auditRows.filter(e => (!k || KGROUP[k].includes(e.k)) && (!mid || e.mid === mid) &&
+    (!q || [e.user, detail(e), e.mname].join(' ').toLowerCase().includes(q)));
+}
+function renderAudit(){
+  const rows = filteredAudit();
+  $('aTbl').innerHTML = '<tr><th>Data e ora</th><th>PC</th><th>Evento</th><th>Utente</th><th>Dettagli</th></tr>' + (rows.slice(0, 1500).map(e =>
+    `<tr><td style="white-space:nowrap">${new Date(e.t*1000).toLocaleString()}</td><td>${esc(e.mname)}</td><td>${esc(KIND[e.k] || e.k)}</td><td>${esc(e.user || '')}</td><td style="font-size:12px;word-break:break-all">${esc(detail(e))}</td></tr>`).join('')
+    || '<tr><td colspan="5" class="mut">Nessun evento</td></tr>');
+}
+['aKind','aMach'].forEach(id => $(id).onchange = renderAudit); $('aUser').oninput = renderAudit;
+$('aCsv').onclick = () => {
+  const q = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"' };
+  const csv = ['Data;PC;Evento;Utente;Dettagli'].concat(filteredAudit().map(e =>
+    [new Date(e.t*1000).toLocaleString(), e.mname, KIND[e.k] || e.k, e.user, detail(e)].map(q).join(';'))).join('\r\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], {type:'text/csv'}));
+  a.download = 'registro-accessi.csv'; a.click();
+};
+
+// ---------------- impostazioni locali
+let filled = false;
+function renderSettings(){
+  if (!filled) {
+    filled = true;
+    document.querySelectorAll('[data-s]').forEach(el => {
+      const v = S.settings[el.dataset.s];
+      if (el.type === 'checkbox') el.checked = !!v; else el.value = v ?? '';
+    });
+    $('inDir').placeholder = S.incoming_default;
+  }
+  $('svcTxt').textContent = !P.service.supported ? 'Disponibile solo su Windows.' :
+     P.service.installed ? (P.service.active ? 'Installato e attivo.' : 'Installato (in avvio...).') : 'Non installato.';
+  $('svcBtn').textContent = P.service.installed ? 'Rimuovi servizio' : 'Installa servizio';
+  $('svcBtn').disabled = !P.service.supported;
+  $('autostart').checked = S.autostart || P.service.installed;
+  $('autostart').disabled = P.platform !== 'win32' || P.service.installed;
+  $('ver').textContent = 'RemoteDesk ' + P.version;
+}
+document.querySelectorAll('[data-s]').forEach(el => el.addEventListener('change', async () => {
+  const r = await post('/api/settings', {[el.dataset.s]: el.type === 'checkbox' ? el.checked : el.value.trim()});
+  toast(r.error || 'Impostazione salvata', 1500); refresh();
+}));
+$('autostart').onchange = async () => { const r = await post('/api/autostart', {on:$('autostart').checked}); if (r.error) toast(r.error); refresh() };
+$('svcBtn').onclick = async () => {
+  const install = !P.service.installed;
+  if (!confirm(install ? 'Installare il servizio di sistema? Windows chiedera\' la conferma da amministratore.' : 'Rimuovere il servizio di sistema?')) return;
+  const r = await post('/api/service', {action: install ? 'install' : 'uninstall'});
+  toast(r.error || 'Operazione avviata: conferma la richiesta di Windows', 6000);
+};
+
+document.addEventListener('click', async ev => {
+  const b = ev.target.closest('button[data-sid]'); if (b) { await post('/api/sessions/close', {sid:b.dataset.sid}); refresh() }
+});
+$('closeAll').onclick = async () => { await post('/api/sessions/close', {}); refresh() };
+
+async function refresh(){
+  try {
+    P = await (await fetch('/api/public')).json();
+    if (P.logged) { const r = await fetch('/api/state'); S = r.ok ? await r.json() : null } else S = null;
+    if (view === 'welcome-add' && !formMode) { renderHeader(); $('nav').classList.add('hide'); return }
+    if (showingKey) { renderHeader(); return }
+    if (editing !== null && tab === 'users') { renderHeader(); return }
+    if (formMode && view === 'netform') { renderHeader(); return }
+    const ae = document.activeElement;
+    if (tab === 'machines' && ae && $('machList').contains(ae) && ae.matches('.iu,.ip')) { renderHeader(); return }
+    render();
+  } catch(e){ $('netTxt').textContent = 'RemoteDesk non e\' in esecuzione'; $('netDot').className = 'dot bad' }
+}
+setInterval(refresh, 2500); refresh();
+</script>
+</body>
+</html>

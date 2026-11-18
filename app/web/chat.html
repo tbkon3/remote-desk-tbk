@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RemoteDesk - Chat</title>
+<link rel="icon" href="/web/icon.png">
+<link rel="stylesheet" href="/web/style.css">
+<style>
+body{display:flex;flex-direction:column;height:100vh}
+header{padding:10px 12px;background:var(--acc);color:#fff;display:flex;align-items:center;gap:8px}
+header img{width:22px;height:22px}
+header .t{font-weight:600}
+header .s{font-size:12px;opacity:.85}
+#msgs{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+.b{max-width:85%;padding:8px 11px;border-radius:12px;white-space:pre-wrap;word-wrap:break-word;line-height:1.35}
+.b .n{font-size:11px;color:var(--mut);margin-bottom:2px}
+.tech{align-self:flex-start;background:var(--card);border:1px solid var(--bd)}
+.local{align-self:flex-end;background:var(--acc);color:#fff}
+.local .n{color:#dbeafe}
+.sys{align-self:center;font-size:12px;color:var(--mut)}
+form{display:flex;gap:6px;padding:10px;border-top:1px solid var(--bd);background:var(--card)}
+form textarea{flex:1;resize:none;height:42px}
+.empty{color:var(--mut);text-align:center;margin-top:30px}
+</style>
+</head>
+<body>
+<header><img src="/web/icon.png" alt=""><div><div class="t">Assistenza remota</div><div class="s" id="who">Nessun tecnico collegato</div></div></header>
+<div id="msgs"><div class="empty">Qui puoi scrivere al tecnico che ti sta assistendo.</div></div>
+<form id="f"><textarea id="txt" placeholder="Scrivi un messaggio... (Invio per inviare)"></textarea><button class="pri">Invia</button></form>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let lastId = -1;
+async function post(p, b){ const r = await fetch(p, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b||{})}); return r.json() }
+async function poll(){
+  try {
+    const st = await (await fetch('/api/chat')).json();
+    $('who').textContent = st.sessions.length ? 'Collegato: ' + st.sessions.map(s => s.name).join(', ') : 'Nessun tecnico collegato';
+    const newest = st.messages.length ? st.messages[st.messages.length - 1].id : 0;
+    if (newest !== lastId) {
+      lastId = newest;
+      $('msgs').innerHTML = st.messages.length ? st.messages.map(m => m.who === 'sys' ? `<div class="sys">${esc(m.text)}</div>` :
+        `<div class="b ${m.who === 'tech' ? 'tech' : 'local'}"><div class="n">${esc(m.who === 'tech' ? m.name : 'Tu')} &middot; ${new Date(m.t*1000).toLocaleTimeString().slice(0,5)}</div>${esc(m.text)}</div>`).join('')
+        : '<div class="empty">Qui puoi scrivere al tecnico che ti sta assistendo.</div>';
+      $('msgs').scrollTop = 1e9;
+    }
+    await post('/api/chat/seen', {read: document.hasFocus() || !document.hidden});
+  } catch (e) { $('who').textContent = 'RemoteDesk non e\' in esecuzione' }
+}
+$('f').onsubmit = async e => {
+  e.preventDefault(); const t = $('txt').value.trim(); if (!t) return;
+  const r = await post('/api/chat/send', {text:t});
+  if (r.error) { alert(r.error); return }
+  $('txt').value = ''; poll();
+};
+$('txt').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('f').requestSubmit() } };
+setInterval(poll, 1000); poll(); $('txt').focus();
+</script>
+</body>
+</html>

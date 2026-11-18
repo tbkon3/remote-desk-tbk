@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+data/
+logs/
+*.zip
+build/out/
+build/dl/
+build/*.res
+*.rdpart
+local.token
+machine.key
+config.json*
+audit.jsonl
