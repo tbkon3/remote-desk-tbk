@@ -223,12 +223,12 @@ table.t select{padding:3px 6px;font-size:12px}
   <div class="card">
     <h3>Connessione</h3>
     <div class="form">
-      <label class="l">Server di segnalazione</label><input data-s="signal">
+      <label class="l">Server di segnalazione</label><input data-s="signal" title="Piu' server separati da virgola: https://... (ntfy) oppure mqtts://host:porta (MQTT)">
       <label class="l">TURN url</label><input data-s="turn_url" placeholder="turn:host:3478 (facoltativo)">
       <label class="l">TURN utente</label><input data-s="turn_user">
       <label class="l">TURN password</label><input data-s="turn_pass" type="password">
     </div>
-    <p class="mut" style="font-size:13px">Il server di segnalazione riceve solo messaggi cifrati e serve a far trovare le macchine tra loro (deve essere lo stesso su tutti i PC); lo schermo viaggia diretto tra i PC.</p>
+    <p class="mut" style="font-size:13px">I server di segnalazione (separati da virgola) servono solo a far trovare le macchine tra loro: ricevono messaggi cifrati e vengono usati tutti insieme, cosi' se uno e' bloccato o al limite funzionano gli altri. Almeno uno deve essere in comune tra i PC. Predefiniti: ntfy.sh e i broker MQTT pubblici EMQX e HiveMQ. Lo schermo viaggia diretto tra i PC.</p>
   </div>
   <p class="mut" id="ver" style="text-align:center"></p>
 </section>
@@ -340,7 +340,7 @@ function renderMachines(){
   let html = '';
   for (const n of P.networks) {
     const dot = `<span class="dot ${n.state === 'online' && !n.limited ? 'on' : 'warn'}"></span>`;
-    if (n.limited) html += `<div class="alertbox" style="max-width:none">Rete ${esc(n.name)}: il server di segnalazione ha raggiunto il <b>limite di messaggi</b> per oggi. Le macchine possono risultare offline anche se sono accese. Soluzione: usare un server ntfy proprio (Impostazioni &gt; Connessione) oppure attendere il ripristino del limite.</div>`;
+    if (n.limited) html += `<div class="alertbox" style="max-width:none">Rete ${esc(n.name)}: <b>nessun server di segnalazione disponibile</b> (quota di messaggi esaurita sugli altri). Le macchine possono risultare offline anche se sono accese. Controlla in <i>Reti</i> lo stato dei server o aggiungine uno in Impostazioni &gt; Connessione.</div>`;
     if (!n.login) {
       html += `<div class="nethd">${dot} Rete ${esc(n.name)}</div>
         <div class="inl" data-nid="${n.nid}"><span class="mut">Non hai effettuato l'accesso a questa rete:</span>
@@ -403,11 +403,11 @@ $('bRefresh').onclick = async () => {
 // ---------------- reti
 function renderNetworks(){
   $('netTbl').innerHTML = '<tr><th>Rete</th><th>Stato</th><th>Il tuo accesso</th><th>Chiave di rete</th><th></th></tr>' + P.networks.map(n => {
+    const rel = (n.relays || []).map(r => `<div style="font-size:12px"><span class="dot ${r.state === 'online' ? 'on' : r.state === 'quota' ? 'bad' : 'warn'}"></span> ${esc(r.name)}: ${esc(r.state === 'quota' ? 'quota giornaliera esaurita' : r.state)}${r.quota ? ` <span class="mut">(${r.quota.used | 0}/${r.quota.limit | 0} messaggi)</span>` : ''}</div>`).join('');
     const adm = S.admin_nets[n.nid];
-    return `<tr><td><b>${esc(n.name)}</b></td><td><span class="dot ${n.state === 'online' ? 'on' : 'warn'}"></span> ${esc(n.state)}${n.registered ? '' : ' <span class="pill">PC rimosso dalla rete</span>'}${n.conflict ? ' <span class="pill" style="background:#fee2e2;color:#991b1b" title="Due versioni diverse del registro utenti: lascia la rete e rientra con un amministratore attuale">registro in conflitto</span>' : ''}</td>
+    return `<tr><td><b>${esc(n.name)}</b></td><td><span class="dot ${n.state === 'online' ? 'on' : 'warn'}"></span> ${esc(n.state)}${rel}${n.registered ? '' : ' <span class="pill">PC rimosso dalla rete</span>'}${n.conflict ? ' <span class="pill" style="background:#fee2e2;color:#991b1b" title="Due versioni diverse del registro utenti: lascia la rete e rientra con un amministratore attuale">registro in conflitto</span>' : ''}</td>
       <td>${n.login ? esc(n.login.name || n.login.user) + (n.login.admin ? ' (admin)' : '') : '<span class="mut">non effettuato</span>'}
-        ${n.quota ? `<div class="mut" style="font-size:12px">messaggi oggi sul server: ${n.quota.used | 0} / ${n.quota.limit | 0}</div>` : ''}
-        ${n.limited ? '<div style="color:var(--bad);font-size:12px">limite messaggi raggiunto</div>' : ''}</td>
+        </td>
       <td>${adm ? `<span class="key" style="display:inline-block;font-size:12px;padding:3px 8px" data-key="${esc(adm.key)}">••••••</span> <button data-show="${n.nid}">Mostra</button>` : '<span class="mut">solo admin</span>'}</td>
       <td style="text-align:right;white-space:nowrap">${n.login ? `<button data-out="${n.nid}">Esci</button>` : ''} <button class="ghost" data-leave="${n.nid}">Lascia rete</button></td></tr>`;
   }).join('');

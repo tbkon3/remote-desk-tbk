@@ -328,6 +328,7 @@ class Agent:
         self.seen_sids = {}        # anti-replay delle offerte, comune a tutte le reti
         self.outgoing = {}         # (rete, macchina) -> ultimo segnale da una finestra di sessione aperta qui
         self.updater = Updater(self)
+        self.console_seen = 0      # ultima volta che una console locale ha chiesto lo stato
         self.updating = False
         self.port = 0
         self.chat = []             # messaggi chat (in memoria)
@@ -379,7 +380,10 @@ class Agent:
         return False
 
     def _migrate(self):
-        """Configurazione 2.0/2.1 (una sola rete) -> elenco di reti."""
+        """Configurazione 2.0/2.1 (una sola rete) -> elenco di reti; server di segnalazione multipli (2.3.1)."""
+        if (self.cfg.get("signal") or "").strip().rstrip("/") in ("https://ntfy.sh", ""):
+            from .relays import DEFAULT_SIGNAL
+            self.cfg.update(signal=DEFAULT_SIGNAL)
         if self.cfg.get("networks") is None:
             nets = []
             if self.cfg.get("network") and self.cfg.get("password"):

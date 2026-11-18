@@ -18,6 +18,8 @@ echo.
 echo  [1/6] Fermo e cancello l'attivita' pianificata "RemoteDesk"
 schtasks /End /TN "RemoteDesk" >nul 2>&1
 schtasks /Delete /TN "RemoteDesk" /F >nul 2>&1
+schtasks /End /TN "RemoteDeskUpdate" >nul 2>&1
+schtasks /Delete /TN "RemoteDeskUpdate" /F >nul 2>&1
 
 echo  [2/6] Chiudo i processi di RemoteDesk
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*remotedesk.py*' } | ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null }"
@@ -44,6 +46,7 @@ echo.
 echo  - La configurazione (reti, utenti, ID del PC) NON e' stata cancellata.
 echo  - Se vuoi continuare a usare RemoteDesk senza servizio, riavvialo con RemoteDesk.exe.
 echo  - Se vuoi eliminarlo del tutto, ora puoi cancellare la cartella di RemoteDesk
-echo    (e "C:\Program Files\RemoteDesk", se esiste).
+echo    (e "C:\Program Files\RemoteDesk", se esiste). I dati del servizio restano in
+echo    "C:\ProgramData\RemoteDesk" (puoi cancellarli se non ti servono piu').
 echo.
 pause

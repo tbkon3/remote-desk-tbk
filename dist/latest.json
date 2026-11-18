@@ -1,10 +1,10 @@
 {
- "version": "2.3.0",
- "file": "RemoteDesk-2.3.0.zip",
- "url": "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.3.0.zip",
- "sha256": "2c07385e059a0a97a42f637c49944527a290851d158e9b3cca992db45dd8924d",
- "size": 53301939,
+ "version": "2.3.1",
+ "file": "RemoteDesk-2.3.1.zip",
+ "url": "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.3.1.zip",
+ "sha256": "90dea67b19bed5cf513e18bf20f61aa266f34de34f6bd3a860c2806598a15ee5",
+ "size": 53305980,
  "date": "2026-11-18",
- "notes": "- Aggiornamenti automatici: RemoteDesk controlla ogni 6 ore se c'e' una nuova versione e la console mostra\n  \"Aggiorna questo PC\". Le macchine della rete con una versione vecchia hanno il pulsante \"Aggiorna\" e si possono\n  aggiornare a distanza, anche mentre si e' collegati: la sessione si ricollega da sola dopo il riavvio.\n- Si aggiorna anche la modalita' servizio (Program Files), con riavvio del servizio e dell'icona dell'utente.\n- Pacchetti firmati con la chiave di rilascio (Ed25519) e verificati con impronta SHA-256; se la nuova versione\n  non parte si torna automaticamente alla precedente.\n- Opzione \"installa automaticamente quando nessuno e' collegato\" e indirizzo degli aggiornamenti configurabile.",
- "sig": "bNsM0Sz/FgznlhXg3QwrVMX4IxDTOpoEf/nlGYvqklQ68BzOACgpZUc57ImIqOqj3Qly39c5AlZehMjdfmZ+DQ=="
+ "notes": "- Piu' server di segnalazione usati insieme: oltre a ntfy.sh, i broker MQTT pubblici EMQX e HiveMQ (TLS). Ogni\n  messaggio parte su tutti e vale il primo che arriva: se un server ha esaurito la quota giornaliera o e' bloccato,\n  la rete continua a funzionare con gli altri. Le configurazioni con solo ntfy.sh vengono aggiornate da sole.\n- Molti meno messaggi: annunci di presenza all'avvio, allo spegnimento e quando una console e' aperta (ogni 10 minuti),\n  piu' uno di sicurezza ogni 30 minuti.\n- Il limite di ntfy viene riconosciuto con precisione: \"troppe richieste\" (attesa e nuovo tentativo) oppure \"quota\n  giornaliera esaurita\". L'avviso compare solo se nessun server e' utilizzabile; in Reti lo stato di ogni server.\n- Script di rimozione del servizio aggiornato anche per le attivita' di aggiornamento.",
+ "sig": "FszApQ2OxQHwdV/NGttLIfHT8mkx+aHB7qhCsIshRd59BmcbHR1F1ZavAvrQlMOezYxSw5tbBh1wd6N3AbwmAg=="
 }

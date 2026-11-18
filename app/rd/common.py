@@ -15,7 +15,7 @@ import zlib
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-VERSION = "2.3.0"
+VERSION = "2.3.1"
 WIN = sys.platform == "win32"
 DEFAULT_PORT = 47800
 
@@ -146,7 +146,7 @@ DEFAULTS = {
     "allow_control": True,     # mouse/tastiera (altrimenti solo visualizzazione)
     "allow_files": True,
     "allow_clipboard": True,
-    "signal": "https://ntfy.sh",
+    "signal": "https://ntfy.sh, mqtts://broker.emqx.io:8883, mqtts://broker.hivemq.com:8883",
     "stun": ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"],
     "turn_url": "", "turn_user": "", "turn_pass": "",
     "incoming_dir": "",        # vuoto = cartella Download dell'utente

@@ -38,7 +38,9 @@
   primo la porta della console (127.0.0.1:47800). Non rilevante per PC con un solo utente.
 - **Fiducia nella macchina locale**: chi e' amministratore di Windows sul PC puo' leggere i dati del servizio.
 - **Testo degli appunti nel registro**: vengono salvati i primi 300 caratteri, che possono contenere password copiate.
-- **Server di segnalazione pubblico**: vede orari e dimensioni dei messaggi (metadati), non il contenuto.
+- **Server di segnalazione pubblici** (ntfy.sh, broker MQTT EMQX/HiveMQ): vedono orari e dimensioni dei messaggi
+  (metadati), non il contenuto; chiunque conosca il topic derivato puo' inondarlo di messaggi (vengono scartati perche'
+  non decifrabili), con un possibile disturbo ma senza accesso.
 - Il pacchetto non e' firmato digitalmente (Authenticode).
 - **Chiave di rilascio**: chi la possiede puo' distribuire aggiornamenti a tutti i PC (anche come SYSTEM). Va custodita
   offline e mai pubblicata. L'aggiornamento automatico senza conferma e' disattivato per impostazione predefinita.

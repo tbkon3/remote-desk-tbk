@@ -14,11 +14,13 @@ import time
 from aiohttp import ClientSession, ClientTimeout
 
 from . import auth
+from .relays import DEFAULT_SIGNAL, make_relay, parse_signal
 from .common import VERSION, NetKey, current_user, os_label
 
 log = logging.getLogger("rd.net")
-PRESENCE_EVERY = 300      # annuncio periodico ogni 5 minuti (i server ntfy pubblici limitano i messaggi al giorno)
-OFFLINE_AFTER = 720       # offline se nessun segno di vita da 12 minuti (lo spegnimento regolare e' immediato)
+PRESENCE_EVERY = 1800     # annuncio di sicurezza ogni 30 minuti; per il resto si annuncia solo quando serve
+CONSOLE_HELLO = 600       # con una console aperta, ogni 10 minuti si chiede alle macchine di ripresentarsi
+OFFLINE_AFTER = 900       # offline se nessun segno di vita da 15 minuti (lo spegnimento regolare e' immediato)
 
 
 def net_id(name, key):
@@ -52,12 +54,17 @@ class Network:
         self.last_presence = 0    # ultimo annuncio inviato
         self.last_hello = 0       # ultima richiesta di ripresentarsi
         self.limited = False      # il server ha rifiutato per troppi messaggi
-        self.quota = None         # {"used", "limit"} messaggi di oggi sul server, se lo comunica
+        self.relays = []          # server di segnalazione usati in parallelo
+        self.recent = {}          # impronte dei messaggi gia' elaborati (arrivano da piu' server)
+        self.announced = False
 
     # ------------------------------------------------------------------ ciclo di vita
     def restart(self):
         self.stop()
         self.key = NetKey(self.entry["name"], self.entry["key"])
+        self.relays = [make_relay(u, self.key.topic) for u in (parse_signal(self.cfg["signal"]) or
+                                                               parse_signal(DEFAULT_SIGNAL))]
+        self.announced = False
         self.task = asyncio.ensure_future(self._main())
 
     def stop(self):
@@ -103,80 +110,92 @@ class Network:
         await self.publish_registry()
 
     @property
-    def server(self):
-        return self.cfg["signal"].rstrip("/")
+    def state(self):
+        if not self.relays or not self.task:
+            return self._state
+        if any(r.online for r in self.relays):
+            return "online"
+        return "offline (riprovo...)"
+
+    @state.setter
+    def state(self, v):
+        self._state = v
+
+    @property
+    def limited(self):
+        """Nessun server utilizzabile e almeno uno per quota esaurita: da segnalare all'utente."""
+        return bool(self.relays and self.task) and not any(r.online for r in self.relays) and \
+            any(r.state == "quota" for r in self.relays)
+
+    @limited.setter
+    def limited(self, v):
+        pass
+
+    @property
+    def quota(self):
+        for r in self.relays:
+            if getattr(r, "quota", None):
+                return r.quota
+        return None
+
+    @quota.setter
+    def quota(self, v):
+        pass
+
+    def relay_status(self):
+        return [r.status() for r in self.relays]
 
     async def _main(self):
-        timeout = ClientTimeout(total=None, sock_connect=15, sock_read=150)   # ntfy manda un keepalive ogni 45 s
-        since = f"{OFFLINE_AFTER}s"
-        async with ClientSession(timeout=timeout, trust_env=True) as s:
-            self.session = s
-            beat = asyncio.ensure_future(self._heartbeat())
+        tasks = [asyncio.ensure_future(r.run(self._on_relay_message)) for r in self.relays]
+        tasks += [asyncio.ensure_future(self._heartbeat()), asyncio.ensure_future(self._console_hello())]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
             try:
-                while True:
-                    try:
-                        self.state = "connessione..."
-                        async with s.get(f"{self.server}/{self.key.topic}/json", params={"since": since}) as r:
-                            r.raise_for_status()
-                            self.state = "online"
-                            await self.publish({"type": "hello"})
-                            await self.publish(self.presence())
-                            async for line in r.content:
-                                try:
-                                    ev = json.loads(line)
-                                except Exception:
-                                    continue
-                                if isinstance(ev, dict) and ev.get("event") == "message":
-                                    since = ev.get("id", since)
-                                    try:
-                                        await self._on_event(ev)
-                                    except Exception as e:   # un messaggio malformato non chiude lo stream
-                                        log.debug("evento scartato: %s", e)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        self.state = "offline (riprovo...)"
-                        log.warning("segnalazione: %s", e)
-                    await asyncio.sleep(5)
-            finally:
-                beat.cancel()
-                try:
-                    await self.publish({"type": "bye"}, session=s)
-                except BaseException:
-                    pass
-                if self.session is s:  # un riavvio potrebbe aver gia' aperto una nuova sessione
-                    self.session = None
+                await asyncio.wait_for(self.publish({"type": "bye"}), 5)
+            except BaseException:
+                pass
+            for t in tasks:
+                t.cancel()
+
+    async def _on_relay_message(self, relay, body, server_time):
+        import hashlib
+        h = hashlib.sha256(body.encode()).hexdigest()[:20]
+        now = time.time()
+        if h in self.recent:          # stesso messaggio arrivato da un altro server
+            return
+        self.recent[h] = now
+        if len(self.recent) > 3000:
+            for k, t0 in list(self.recent.items()):
+                if now - t0 > 900:
+                    self.recent.pop(k, None)
+        ev = {"message": body, "time": server_time if isinstance(server_time, int) else int(self.server_now())}
+        try:
+            await self._on_event(ev)
+        except Exception as e:        # un messaggio malformato non ferma nulla
+            log.debug("evento scartato: %s", e)
 
     async def _heartbeat(self):
-        asyncio.ensure_future(self._quota_loop())
+        while not any(r.online for r in self.relays):
+            await asyncio.sleep(1)
+        await asyncio.sleep(1)
+        await self._safe_publish({"type": "hello"})       # all'avvio: chi c'e' si ripresenta
+        await self._safe_publish(self.presence())
+        self.announced = True
         while True:
-            await asyncio.sleep(PRESENCE_EVERY + random.uniform(-20, 20))
-            if self.state == "online":
-                try:
-                    await self.publish(self.presence())
-                except Exception as e:
-                    log.debug("presence: %s", e)
+            await asyncio.sleep(PRESENCE_EVERY + random.uniform(-60, 60))
+            await self._safe_publish(self.presence())
 
-    async def _quota_loop(self):
-        """Messaggi usati oggi sul server ntfy (endpoint /v1/account, se disponibile)."""
+    async def _console_hello(self):
+        """Solo quando qualcuno guarda la console chiedo alle macchine di ripresentarsi."""
+        was_active = False
         while True:
-            if not (self.session and self.state == "online"):
-                await asyncio.sleep(10)
-                continue
-            try:
-                if True:
-                    async with self.session.get(f"{self.server}/v1/account", timeout=ClientTimeout(total=15)) as r:
-                        if r.status == 200:
-                            d = await r.json(content_type=None)
-                            lim = (d.get("limits") or {}).get("messages")
-                            used = (d.get("stats") or {}).get("messages")
-                            if isinstance(lim, int) and isinstance(used, int):
-                                self.quota = {"used": used, "limit": lim}
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                pass
-            await asyncio.sleep(600)
+            await asyncio.sleep(10)
+            active = time.time() - self.agent.console_seen < 30
+            if active and (time.time() - self.last_hello > CONSOLE_HELLO or
+                           (not was_active and time.time() - self.last_hello > 60)):
+                await self.refresh(force=True)
+            was_active = active
 
     async def _run_update(self, user):
         try:
@@ -195,9 +214,9 @@ class Network:
                 "rid": secrets.token_hex(12)}
         await self.publish({"type": "updcmd", **body, "sig": auth.sign(lg["priv"], body)})
 
-    async def refresh(self):
+    async def refresh(self, force=False):
         """Chiede a tutte le macchine della rete di ripresentarsi (al massimo ogni 15 secondi)."""
-        if time.time() - self.last_hello < 15 or self.state != "online":
+        if (not force and time.time() - self.last_hello < 15) or self.state != "online":
             return False
         self.last_hello = time.time()
         await self._safe_publish({"type": "hello"})
@@ -227,47 +246,28 @@ class Network:
         return time.time() + self.offset
 
     async def publish(self, obj, session=None):
-        session = session or self.session
-        if not self.key or not session:
+        """Pubblica su tutti i server; basta che uno accetti."""
+        if not self.key or not self.relays:
             raise RuntimeError("rete non connessa")
         obj = dict(obj, frm=self.cfg["id"], ts=int(time.time()))
         if obj.get("type") in ("presence", "bye"):
             obj["msig"] = auth.sign(self.agent.mkey, obj)
-        async with session.post(f"{self.server}/{self.key.topic}", data=self.key.seal(obj)) as r:
-            if r.status == 429:
-                if not self.limited:
-                    log.warning("[%s] il server di segnalazione rifiuta i messaggi: limite giornaliero raggiunto", self.name)
-                    self.agent.log_event(f"Rete {self.name}: limite di messaggi del server di segnalazione raggiunto")
-                self.limited = True
-                raise RuntimeError("limite messaggi del server di segnalazione raggiunto")
-            if r.status >= 300:
-                raise RuntimeError(f"HTTP {r.status}")
-            self.limited = False
-            if obj.get("type") == "presence":
-                self.last_presence = time.time()
-            try:
-                ev = await r.json(content_type=None)
-                if ev.get("time"):
-                    self.offset = ev["time"] - time.time()
-            except Exception:
-                pass
+        blob = self.key.seal(obj)
+
+        async def one(r):
+            t = await r.publish(blob)
+            if isinstance(t, int):
+                self.offset = t - time.time()
+            return True
+        res = await asyncio.gather(*(one(r) for r in self.relays), return_exceptions=True)
+        if not any(x is True for x in res):
+            errs = "; ".join(f"{r.name}: {e}" for r, e in zip(self.relays, res) if e is not True)
+            raise RuntimeError(f"nessun server di segnalazione ha accettato il messaggio ({errs})")
+        if obj.get("type") == "presence":
+            self.last_presence = time.time()
 
     async def _on_event(self, ev):
         body = ev.get("message", "")
-        att = ev.get("attachment") or {}
-        if att.get("url"):
-            # solo allegati del nostro server di segnalazione e di dimensione ragionevole
-            url = str(att["url"])
-            if not url.startswith(self.server + "/file/") or int(att.get("size") or 0) > 4 * 1024 * 1024:
-                return
-            try:
-                async with self.session.get(url, timeout=ClientTimeout(total=30)) as r:
-                    data = await r.content.read(4 * 1024 * 1024 + 1)
-                if len(data) > 4 * 1024 * 1024:
-                    return
-                body = data.decode("utf-8", "replace")
-            except Exception:
-                return
         try:
             m = self.key.unseal(body)
         except Exception:
@@ -322,9 +322,18 @@ class Network:
         elif t == "dbreq":
             if m.get("to") in (self.cfg["id"], "*") and self.reg.doc:
                 have = m.get("have") if isinstance(m.get("have"), int) else 0
-                docs = [d for d in (self.entry.get("history") or [self.reg.doc]) if d.get("v", 0) > have]
-                asyncio.ensure_future(self._safe_publish({"type": "db", "docs": docs or [self.reg.doc]},
-                                                         delay=random.uniform(0, 1.5) if m.get("to") == "*" else 0))
+                docs = [d for d in (self.entry.get("history") or [self.reg.doc]) if d.get("v", 0) > have] or [self.reg.doc]
+                delay = random.uniform(0, 1.5) if m.get("to") == "*" else 0
+                chunk, size = [], 0
+                for d in reversed(docs):      # dal piu' recente; blocchi da ~120 KB
+                    n = len(json.dumps(d))
+                    if chunk and size + n > 120_000:
+                        asyncio.ensure_future(self._safe_publish({"type": "db", "docs": list(reversed(chunk))}, delay=delay))
+                        chunk, size, delay = [], 0, delay + 0.5
+                    chunk.append(d)
+                    size += n
+                if chunk:
+                    asyncio.ensure_future(self._safe_publish({"type": "db", "docs": list(reversed(chunk))}, delay=delay))
         elif t == "auditreq":
             rid = m.get("rid")
             if rid in self.audit_seen or self.reg.version == 0:
@@ -338,7 +347,7 @@ class Network:
             if box is not None and m.get("to") == self.cfg["id"]:
                 box.append((frm, m))
         elif t == "hello":
-            if age < 60 and time.time() - self.last_presence > 20:   # niente risposte doppie se ho appena annunciato
+            if age < 60 and time.time() - self.last_presence > 10:   # niente risposte doppie a richieste simultanee
                 asyncio.get_running_loop().call_later(random.uniform(0.2, 2.5),
                                                       lambda: asyncio.ensure_future(self._safe_presence()))
         elif t == "bye":

@@ -103,7 +103,7 @@ def make_app(agent, port, on_quit):
         for n in agent.nets.values():
             lg = lgs.get(n.nid)
             nets.append({"nid": n.nid, "name": n.name, "state": n.state, "conflict": n.conflict,
-                         "limited": n.limited, "quota": n.quota,
+                         "limited": n.limited, "quota": n.quota, "relays": n.relay_status(),
                          "registered": cfg["id"] in n.reg.machines(),
                          "login": {"user": lg["user"], "admin": n.reg.is_admin(lg["user"]),
                                    "name": (n.reg.user(lg["user"]) or {}).get("name")} if lg else None})
@@ -203,6 +203,7 @@ def make_app(agent, port, on_quit):
     # ------------------------------------------------------------------ utente loggato
     async def state(req):
         lgs = need_login(req)
+        agent.console_seen = time.time()
         now = time.time()
         machines, admin_nets = [], {}
         for nid, lg in lgs.items():
@@ -328,8 +329,12 @@ def make_app(agent, port, on_quit):
                 upd[k] = bool(v)
             else:
                 upd[k] = str(v or "").strip()[:500]
-        if "signal" in upd and not re.match(r"^https?://[^\s/]+", upd["signal"]):
-            return err("Server di segnalazione non valido (deve iniziare con http:// o https://)")
+        if "signal" in upd:
+            from .relays import parse_signal
+            lst = parse_signal(upd["signal"])
+            if not lst:
+                return err("Indica almeno un server di segnalazione (https://... oppure mqtts://host:porta)")
+            upd["signal"] = ", ".join(lst)
         if upd.get("update_url") and not upd["update_url"].startswith("https://"):
             return err("L'indirizzo degli aggiornamenti deve iniziare con https://")
         if "name" in upd and not upd["name"]:

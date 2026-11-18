@@ -1,5 +1,15 @@
 # Novita'
 
+## 2.3.1
+- Piu' server di segnalazione usati insieme: oltre a ntfy.sh, i broker MQTT pubblici EMQX e HiveMQ (TLS). Ogni
+  messaggio parte su tutti e vale il primo che arriva: se un server ha esaurito la quota giornaliera o e' bloccato,
+  la rete continua a funzionare con gli altri. Le configurazioni con solo ntfy.sh vengono aggiornate da sole.
+- Molti meno messaggi: annunci di presenza all'avvio, allo spegnimento e quando una console e' aperta (ogni 10 minuti),
+  piu' uno di sicurezza ogni 30 minuti.
+- Il limite di ntfy viene riconosciuto con precisione: "troppe richieste" (attesa e nuovo tentativo) oppure "quota
+  giornaliera esaurita". L'avviso compare solo se nessun server e' utilizzabile; in *Reti* lo stato di ogni server.
+- Script di rimozione del servizio aggiornato anche per le attivita' di aggiornamento.
+
 ## 2.3.0
 - Aggiornamenti automatici: RemoteDesk controlla ogni 6 ore se c'e' una nuova versione e la console mostra
   "Aggiorna questo PC". Le macchine della rete con una versione vecchia hanno il pulsante "Aggiorna" e si possono

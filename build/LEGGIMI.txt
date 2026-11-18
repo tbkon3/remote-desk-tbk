@@ -1,4 +1,4 @@
-﻿REMOTEDESK 2.3 - accesso remoto tra le tue macchine, senza server propri
+﻿REMOTEDESK 2.3.1 - accesso remoto tra le tue macchine, senza server propri
 =========================================================================
 
 CONTENUTO
@@ -97,7 +97,9 @@ SICUREZZA
   - Il registro di utenti/permessi/macchine e' firmato da un amministratore:
     nessuno puo' aggiungersi permessi senza le credenziali di un admin.
   - Schermo, input e file viaggiano DIRETTI tra i PC, cifrati (WebRTC DTLS-SRTP).
-  - Per farsi trovare le macchine usano ntfy.sh (servizio pubblico gratuito)
+  - Per farsi trovare le macchine usano insieme piu' servizi pubblici gratuiti
+    (ntfy.sh e i broker MQTT EMQX e HiveMQ): se uno e' al limite funzionano gli altri.
+    In precedenza usavano solo ntfy.sh (servizio pubblico gratuito)
     solo come "bacheca": i messaggi sono cifrati AES-256-GCM con la chiave di
     rete. Puoi usare un tuo server ntfy in Impostazioni > Rete.
   - La console funziona solo su 127.0.0.1, con login e protezione anti-CSRF.

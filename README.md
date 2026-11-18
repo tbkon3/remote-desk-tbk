@@ -9,8 +9,8 @@ Un'unica cartella portabile (`RemoteDesk.exe` + Python incluso): nessuna install
 - Piu' monitor, file manager, appunti condivisi, audio, chat, registro accessi
 - Connessione diretta tra i PC (WebRTC, cifrata), segnalazione cifrata end-to-end
 
-> **Download:** [**dist/RemoteDesk-2.3.0.zip**](dist/RemoteDesk-2.3.0.zip) (53 MB, pulsante "Download raw"; impronta
-> SHA-256 in [dist/RemoteDesk-2.3.0.zip.sha256](dist/RemoteDesk-2.3.0.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
+> **Download:** [**dist/RemoteDesk-2.3.1.zip**](dist/RemoteDesk-2.3.1.zip) (53 MB, pulsante "Download raw"; impronta
+> SHA-256 in [dist/RemoteDesk-2.3.1.zip.sha256](dist/RemoteDesk-2.3.1.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
 > Su ogni PC estrai **lo zip originale**: non copiare una cartella gia' usata.
 
 ---
@@ -167,15 +167,17 @@ mano una volta su ogni PC.
   |=================== WebRTC diretto (DTLS-SRTP), schermo/input/file ========|
 ```
 
-- **Segnalazione:** per presentarsi e scambiarsi i parametri di connessione i PC usano un topic di
-  [ntfy](https://ntfy.sh) (servizio pubblico gratuito). I messaggi sono **cifrati AES-256-GCM** con la chiave di rete:
-  il server vede solo dati illeggibili. Puoi usare un server ntfy tuo (Impostazioni > Connessione), uguale su tutti i PC.
-- **Limiti del server pubblico:** ntfy.sh limita il numero di messaggi al giorno per indirizzo IP (i PC dietro lo stesso
-  router condividono il limite). RemoteDesk annuncia ogni macchina ogni 5 minuti e su richiesta (*Aggiorna*); nella
-  sezione *Reti* vedi i messaggi usati oggi. Se il limite viene raggiunto la console lo segnala: in quel caso, o con
-  molte macchine, conviene un **server ntfy proprio**, per esempio su un piccolo VPS o un PC sempre acceso:
-  `docker run -d -p 80:80 binwiederhier/ntfy serve` e poi, su **tutti** i PC, Impostazioni > Connessione >
-  Server di segnalazione = `http://indirizzo-del-server` (meglio con HTTPS davanti).
+- **Segnalazione:** per presentarsi e scambiarsi i parametri di connessione i PC usano **piu' server pubblici
+  insieme** (predefiniti: [ntfy.sh](https://ntfy.sh) e i broker MQTT pubblici `broker.emqx.io` e `broker.hivemq.com`,
+  via TLS). Ogni messaggio viene pubblicato su tutti e vale il primo che arriva: se un server e' irraggiungibile o ha
+  esaurito la sua quota, gli altri continuano. I messaggi sono **cifrati AES-256-GCM** con la chiave di rete e firmati:
+  i server vedono solo dati illeggibili. L'elenco si cambia in Impostazioni > Connessione (separati da virgola:
+  `https://...` per ntfy, `mqtts://host:porta` per MQTT); almeno un server deve essere in comune tra i PC.
+- **Limiti dei server pubblici:** ntfy.sh limita le richieste e i messaggi giornalieri per indirizzo IP (i PC dietro lo
+  stesso router li condividono). RemoteDesk invia pochi messaggi (all'avvio, allo spegnimento, ogni 10 minuti solo con
+  una console aperta e uno di sicurezza ogni 30 minuti) e nella sezione *Reti* mostra lo stato di ogni server. Per
+  avere un server tutto tuo: `docker run -d -p 80:80 binwiederhier/ntfy serve` (oppure un broker MQTT come Mosquitto)
+  e aggiungilo all'elenco su tutti i PC.
 - **Dati:** schermo, input, file e audio viaggiano **direttamente** tra i PC (WebRTC), con STUN di Google/Cloudflare
   per attraversare i router.
 - **Firewall:** RemoteDesk deve poter ricevere connessioni UDP. Se Windows ha bloccato Python, i PC si vedono in
@@ -308,7 +310,7 @@ compila `RemoteDesk.exe` con mingw-w64 e crea lo zip.
 |---|---|
 | Al primo avvio non compare "Entra in una rete" | Cartella copiata da un PC gia' configurato: dalla 2.2 viene rilevato automaticamente; altrimenti estrai lo zip originale. |
 | I PC si vedono ma la sessione non parte ("Connessione diretta non riuscita") | Firewall di Windows: `tools/Consenti-RemoteDesk-firewall.bat` su entrambi i PC (va messo nella cartella di RemoteDesk). Se i PC sono in reti diverse e restrittive: configura un TURN. |
-| Una macchina accesa risulta offline | Premi **Aggiorna**. Se compare l'avviso "limite di messaggi", il server di segnalazione pubblico ha esaurito il limite di oggi: usa un server ntfy proprio (vedi [Connessione](#connessione-segnalazione-firewall-e-turn)). |
+| Una macchina accesa risulta offline | Premi **Aggiorna**. In *Reti* controlla lo stato dei server di segnalazione: ne basta uno "online" in comune tra i PC. Le versioni fino alla 2.3.0 usano solo ntfy.sh: aggiorna tutti i PC alla 2.3.1. |
 | "Nessuna risposta" | Il PC remoto non riceve: e' acceso? stesso server di segnalazione su entrambi? |
 | "Autenticazione non valida" / "non ha il permesso" | Utente o permessi: controlla in *Utenti e permessi*. |
 | Ctrl+Alt+Canc non funziona | Serve la modalita' servizio sul PC remoto. |
