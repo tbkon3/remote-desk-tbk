@@ -252,6 +252,11 @@ function lost(msg, sub){
   }
 }
 
+// forma del puntatore del PC remoto (solo se posso controllarlo; in sola visione resta il divieto)
+const CURSORS = new Set(['default','none','text','wait','crosshair','nwse-resize','nesw-resize','ew-resize','ns-resize','move','not-allowed','pointer','progress','help']);
+let remoteCursor = 'default';
+function applyCursor(){ $('video').style.cursor = perms.control ? remoteCursor : '' }
+
 function onCtl(m){
   if (m.t === 'info') {
     perms = m.perms; NAME = m.name || NAME; $('nm').textContent = NAME; document.title = NAME + ' - RemoteDesk';
@@ -268,6 +273,7 @@ function onCtl(m){
     $('bAudio').classList.toggle('hide', !m.audio);
     const ctlOk = perms.control;
     $('stage').classList.toggle('view', !ctlOk);
+    applyCursor();
     document.querySelectorAll('.ctl').forEach(e => e.classList.toggle('hide', !ctlOk));
     $('clip').disabled = !perms.clipboard; $('bFiles').disabled = !perms.files;
   } else if (m.t === 'chat') {
@@ -275,6 +281,10 @@ function onCtl(m){
     if ($('cp').classList.contains('hide')) { unread++; $('cBadge').textContent = unread; $('cBadge').classList.remove('hide'); toast('Messaggio da ' + (m.name || 'utente') + ': ' + m.text.slice(0, 80), 5000) }
   } else if (m.t === 'clip') {
     if ($('clip').checked && perms.clipboard) { lastLocalClip = m.text; post('/api/clip', {text:m.text}) }
+  } else if (m.t === 'cur') {
+    remoteCursor = m.c === 'custom' && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(m.img || '')
+      ? `url("${m.img}") ${Math.max(0, m.hx | 0)} ${Math.max(0, m.hy | 0)}, default` : (CURSORS.has(m.c) ? m.c : 'default');
+    applyCursor();
   } else if (m.t === 'notice') {
     toast(m.text, 6000);
   } else if (m.t === 'bye') {

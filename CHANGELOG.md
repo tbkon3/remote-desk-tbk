@@ -1,5 +1,10 @@
 # Novita'
 
+## 2.2.1
+- Il puntatore del mouse assume la forma di quello del PC remoto: doppia freccia sui bordi delle finestre,
+  I nel testo, mano sui link, attesa, spostamento, ecc. I cursori personalizzati dei programmi vengono
+  inviati come immagine; se il PC remoto nasconde il cursore, viene nascosto anche nella sessione.
+
 ## 2.2.0
 - **Piu' reti sullo stesso PC**, ciascuna con chiave, utenti, permessi e registro propri; sezione *Reti*
   (aggiungi, esci, lascia rete), login separato per rete.

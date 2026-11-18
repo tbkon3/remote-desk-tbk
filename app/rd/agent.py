@@ -121,6 +121,7 @@ class Session:
         self.user = m.get("user", "")
         self.rights = set(m.get("_rights", []))
         self.boost_until = 0
+        self.cursor_key = None    # ultima forma del cursore inviata a questa sessione
         try:
             self.monitor = primary_index(list_monitors())
         except Exception:
@@ -729,6 +730,38 @@ class Agent:
                 await s.close()
 
     # ------------------------------------------------------------------ cicli di servizio
+    async def cursor_watch(self):
+        """Invia alle sessioni la forma del puntatore del PC (doppia freccia sui bordi, I nel testo, ecc.)."""
+        if not WIN:
+            return
+        loop = asyncio.get_running_loop()
+        cache = {}   # handle cursore personalizzato -> messaggio con immagine
+        while True:
+            targets = [s for s in self.sessions.values() if s.connected and s.can_view()]
+            if not targets:
+                await asyncio.sleep(0.5)
+                continue
+            await asyncio.sleep(0.06)
+            try:
+                st = await loop.run_in_executor(None, W.cursor_state)
+            except Exception:
+                continue
+            if not st:
+                continue
+            css, h = st
+            if css == "custom":
+                if h not in cache:
+                    if len(cache) > 64:
+                        cache.clear()
+                    cache[h] = await loop.run_in_executor(None, _custom_cursor_msg, h)
+                msg, key = cache[h], ("custom", h)
+            else:
+                msg, key = {"t": "cur", "c": css}, (css, None)
+            for s in targets:
+                if s.cursor_key != key:
+                    s.cursor_key = key
+                    s.send(msg)
+
     async def clip_watch(self):
         loop = asyncio.get_running_loop()
         last_seq = None
@@ -802,6 +835,25 @@ class Agent:
             self.cfg.save()
         except Exception:
             pass
+
+
+def _custom_cursor_msg(h):
+    """Cursore personalizzato -> messaggio con immagine PNG (o freccia normale se non leggibile)."""
+    try:
+        import base64
+        import io
+        from PIL import Image
+        r = W.cursor_image(h)
+        if not r:
+            return {"t": "cur", "c": "default"}
+        rgba, w, hh, hx, hy = r
+        buf = io.BytesIO()
+        Image.frombytes("RGBA", (w, hh), rgba).save(buf, "PNG")
+        return {"t": "cur", "c": "custom", "hx": int(hx), "hy": int(hy),
+                "img": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()}
+    except Exception as e:
+        log.debug("cursore personalizzato: %s", e)
+        return {"t": "cur", "c": "default"}
 
 
 def service_marker(data_dir):

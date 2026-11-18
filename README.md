@@ -9,8 +9,8 @@ Un'unica cartella portabile (`RemoteDesk.exe` + Python incluso): nessuna install
 - Piu' monitor, file manager, appunti condivisi, audio, chat, registro accessi
 - Connessione diretta tra i PC (WebRTC, cifrata), segnalazione cifrata end-to-end
 
-> **Download:** [**dist/RemoteDesk-2.2.0.zip**](dist/RemoteDesk-2.2.0.zip) (53 MB, pulsante "Download raw"; impronta
-> SHA-256 in [dist/RemoteDesk-2.2.0.zip.sha256](dist/RemoteDesk-2.2.0.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
+> **Download:** [**dist/RemoteDesk-2.2.1.zip**](dist/RemoteDesk-2.2.1.zip) (53 MB, pulsante "Download raw"; impronta
+> SHA-256 in [dist/RemoteDesk-2.2.1.zip.sha256](dist/RemoteDesk-2.2.1.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
 > Su ogni PC estrai **lo zip originale**: non copiare una cartella gia' usata.
 
 ---
@@ -72,7 +72,7 @@ Ogni sessione e' una finestra indipendente e ridimensionabile: puoi controllare 
 | Piu' monitor | Menu **Schermo 1 / Schermo 2 / ...**, **Tutti gli schermi (una finestra)**, **Tutti gli schermi (una finestra per schermo)**; all'avvio si vede il monitor principale |
 | Qualita' | Massima fluidita' (30 fps), Alta, Normale, Veloce, Rete lenta |
 | Tastiera | Testo con AltGr e lettere accentate, combinazioni; menu **Tasti**: Ctrl+Alt+Canc, Win, Alt+Tab, Gestione attivita', Win+R/E/D, Alt+F4, Stamp |
-| Mouse | Clic sinistro/destro/centrale, trascinamento, rotellina, pulsanti avanti/indietro |
+| Mouse | Clic sinistro/destro/centrale, trascinamento, rotellina, pulsanti avanti/indietro; il puntatore prende la forma di quello remoto (doppia freccia sui bordi, I nel testo, mano sui link, cursori personalizzati) |
 | Appunti | Copia/incolla di testo nei due sensi (casella *Appunti*) |
 | File | File manager del PC remoto: scarica (cartelle come .zip), carica, rinomina, elimina, nuova cartella; trascina file e cartelle sulla finestra |
 | Audio | Pulsante **Audio: off/on** (parte spento): senti l'audio del PC remoto |

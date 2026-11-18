@@ -74,7 +74,8 @@ async def run_agent(data_dir, port, service_mode=False, parent=None, stop_flag=N
         return
     log.info("agente pronto: ID %s, http://127.0.0.1:%s/ (servizio=%s)", fmt_id(cfg["id"]), port, service_mode)
     agent.start_networks()
-    tasks = [asyncio.ensure_future(agent.clip_watch()), asyncio.ensure_future(agent.housekeeping())]
+    tasks = [asyncio.ensure_future(agent.clip_watch()), asyncio.ensure_future(agent.housekeeping()),
+             asyncio.ensure_future(agent.cursor_watch())]
     if parent:
         tasks.append(asyncio.ensure_future(agent.watch_parent(parent)))
     if stop_flag is not None:

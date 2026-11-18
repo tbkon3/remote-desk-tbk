@@ -536,3 +536,126 @@ class as_session_user:
         advapi32.RevertToSelf()
         kernel32.CloseHandle(self.tok)
         return False
+
+
+# =========================================================================== forma del cursore
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", wt.LONG), ("y", wt.LONG)]
+
+
+class CURSORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("flags", wt.DWORD), ("hCursor", wt.HANDLE), ("ptScreenPos", _POINT)]
+
+
+class ICONINFO(ctypes.Structure):
+    _fields_ = [("fIcon", wt.BOOL), ("xHotspot", wt.DWORD), ("yHotspot", wt.DWORD),
+                ("hbmMask", wt.HANDLE), ("hbmColor", wt.HANDLE)]
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+                ("biBitCount", wt.WORD), ("biCompression", wt.DWORD), ("biSizeImage", wt.DWORD),
+                ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD),
+                ("biClrImportant", wt.DWORD)]
+
+
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+user32.GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
+user32.LoadCursorW.argtypes = [wt.HINSTANCE, ctypes.c_void_p]
+user32.LoadCursorW.restype = wt.HANDLE
+user32.GetIconInfo.argtypes = [wt.HANDLE, ctypes.POINTER(ICONINFO)]
+user32.DrawIconEx.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int, wt.HANDLE, ctypes.c_int, ctypes.c_int, wt.UINT,
+                              wt.HANDLE, wt.UINT]
+gdi32.CreateCompatibleDC.argtypes = [wt.HDC]
+gdi32.CreateCompatibleDC.restype = wt.HDC
+gdi32.CreateDIBSection.argtypes = [wt.HDC, ctypes.c_void_p, wt.UINT, ctypes.POINTER(ctypes.c_void_p), wt.HANDLE,
+                                   wt.DWORD]
+gdi32.CreateDIBSection.restype = wt.HANDLE
+gdi32.SelectObject.argtypes = [wt.HDC, wt.HANDLE]
+gdi32.SelectObject.restype = wt.HANDLE
+gdi32.DeleteObject.argtypes = [wt.HANDLE]
+gdi32.DeleteDC.argtypes = [wt.HDC]
+gdi32.PatBlt.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.DWORD]
+gdi32.GetObjectW.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p]
+
+# cursori standard di Windows -> cursori CSS del browser
+_IDC_CSS = {32512: "default", 32513: "text", 32514: "wait", 32515: "crosshair", 32516: "default",
+            32642: "nwse-resize", 32643: "nesw-resize", 32644: "ew-resize", 32645: "ns-resize",
+            32646: "move", 32648: "not-allowed", 32649: "pointer", 32650: "progress", 32651: "help",
+            32671: "pointer", 32672: "pointer"}
+_std_cursors = {}
+
+
+def _standard_cursors():
+    if not _std_cursors:
+        for idc, css in _IDC_CSS.items():
+            h = user32.LoadCursorW(None, ctypes.c_void_p(idc))
+            if h:
+                _std_cursors[h] = css
+    return _std_cursors
+
+
+def cursor_state():
+    """('none'|nome CSS|'custom', handle) del cursore visibile ora, oppure None se non leggibile."""
+    ci = CURSORINFO()
+    ci.cbSize = ctypes.sizeof(ci)
+    if not user32.GetCursorInfo(ctypes.byref(ci)):
+        return None
+    if not ci.flags & 1:          # CURSOR_SHOWING
+        return ("none", None)
+    h = ci.hCursor
+    css = _standard_cursors().get(h)
+    return (css, h) if css else ("custom", h)
+
+
+def _draw_cursor(h, w, hh, background):
+    """Disegna il cursore su un fondo uniforme e ritorna i pixel BGRA."""
+    dc = gdi32.CreateCompatibleDC(None)
+    bmi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -hh, 1, 32, 0, 0, 0, 0, 0, 0)
+    bits = ctypes.c_void_p()
+    bmp = gdi32.CreateDIBSection(dc, ctypes.byref(bmi), 0, ctypes.byref(bits), None, 0)
+    old = gdi32.SelectObject(dc, bmp)
+    try:
+        gdi32.PatBlt(dc, 0, 0, w, hh, 0x00FF0062 if background else 0x00000042)  # WHITENESS / BLACKNESS
+        user32.DrawIconEx(dc, 0, 0, h, w, hh, 0, None, 0x0003)                   # DI_NORMAL
+        return ctypes.string_at(bits, w * hh * 4)
+    finally:
+        gdi32.SelectObject(dc, old)
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(dc)
+
+
+def cursor_image(h):
+    """Cursore personalizzato -> (pixel RGBA, larghezza, altezza, hotspot x, hotspot y) oppure None.
+    La trasparenza si ricava disegnandolo su nero e su bianco (vale anche per i cursori monocromatici)."""
+    ii = ICONINFO()
+    if not user32.GetIconInfo(h, ctypes.byref(ii)):
+        return None
+    try:
+        class BITMAP(ctypes.Structure):
+            _fields_ = [("bmType", wt.LONG), ("bmWidth", wt.LONG), ("bmHeight", wt.LONG), ("bmWidthBytes", wt.LONG),
+                        ("bmPlanes", wt.WORD), ("bmBitsPixel", wt.WORD), ("bmBits", ctypes.c_void_p)]
+        bm = BITMAP()
+        gdi32.GetObjectW(ii.hbmColor or ii.hbmMask, ctypes.sizeof(bm), ctypes.byref(bm))
+        w = bm.bmWidth
+        hh = bm.bmHeight if ii.hbmColor else bm.bmHeight // 2   # maschera monocromatica = doppia altezza
+        if not (0 < w <= 128 and 0 < hh <= 128):
+            return None
+        hx, hy = ii.xHotspot, ii.yHotspot
+    finally:
+        for b in (ii.hbmMask, ii.hbmColor):
+            if b:
+                gdi32.DeleteObject(b)
+    black = _draw_cursor(h, w, hh, False)
+    white = _draw_cursor(h, w, hh, True)
+    out = bytearray(w * hh * 4)
+    for i in range(0, len(out), 4):
+        b0, g0, r0 = black[i], black[i + 1], black[i + 2]
+        b1, g1, r1 = white[i], white[i + 1], white[i + 2]
+        a = 255 - max(0, min(255, ((r1 - r0) + (g1 - g0) + (b1 - b0)) // 3))
+        if a:
+            out[i] = min(255, r0 * 255 // a)
+            out[i + 1] = min(255, g0 * 255 // a)
+            out[i + 2] = min(255, b0 * 255 // a)
+        out[i + 3] = a
+    return bytes(out), w, hh, hx, hy
