@@ -232,8 +232,11 @@ async function connect(){
   } finally { connecting = false }
 }
 
+let aliveTimer = null;
+function pingAlive(){ post('/api/session/alive', {nid:NET, id:TARGET}).catch(() => {}) }
 function onConnected(){
   everConnected = true; setDot('on');
+  pingAlive(); clearInterval(aliveTimer); aliveTimer = setInterval(() => { if (pc && pc.connectionState === 'connected') pingAlive() }, 20000);
   overlay(MODE === 'files' ? '' : 'In attesa dell\'immagine...', '');
   $('stage').focus();
   clearInterval(statsTimer); statsTimer = setInterval(updateStats, 2000);

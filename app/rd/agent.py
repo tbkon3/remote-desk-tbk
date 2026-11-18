@@ -325,6 +325,7 @@ class Agent:
         self.audit = Audit(data_dir)
         self.block_owner = None
         self.seen_sids = {}        # anti-replay delle offerte, comune a tutte le reti
+        self.outgoing = {}         # (rete, macchina) -> ultimo segnale da una finestra di sessione aperta qui
         self.chat = []             # messaggi chat (in memoria)
         self.chat_seq = 0
         self.chat_seen = 0         # ultimo segnale di vita della finestra chat locale

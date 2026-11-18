@@ -9,8 +9,8 @@ Un'unica cartella portabile (`RemoteDesk.exe` + Python incluso): nessuna install
 - Piu' monitor, file manager, appunti condivisi, audio, chat, registro accessi
 - Connessione diretta tra i PC (WebRTC, cifrata), segnalazione cifrata end-to-end
 
-> **Download:** [**dist/RemoteDesk-2.2.1.zip**](dist/RemoteDesk-2.2.1.zip) (53 MB, pulsante "Download raw"; impronta
-> SHA-256 in [dist/RemoteDesk-2.2.1.zip.sha256](dist/RemoteDesk-2.2.1.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
+> **Download:** [**dist/RemoteDesk-2.2.2.zip**](dist/RemoteDesk-2.2.2.zip) (53 MB, pulsante "Download raw"; impronta
+> SHA-256 in [dist/RemoteDesk-2.2.2.zip.sha256](dist/RemoteDesk-2.2.2.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
 > Su ogni PC estrai **lo zip originale**: non copiare una cartella gia' usata.
 
 ---
@@ -56,7 +56,7 @@ L'exe non e' firmato: se SmartScreen avvisa, "Ulteriori informazioni" > "Esegui 
 ### Console
 | Sezione | Contenuto |
 |---|---|
-| **Macchine** | Le macchine su cui hai permessi, raggruppate per rete. Verde = online. Pulsanti **Controlla**, **Guarda**, **File** (doppio clic = azione principale). |
+| **Macchine** | Le macchine su cui hai permessi, raggruppate per rete. Verde = online, bollino *collegato* = hai una sessione aperta. Pulsanti **Controlla**, **Guarda**, **File** (doppio clic = azione principale); **Aggiorna** chiede a tutte le macchine di ripresentarsi. |
 | **Reti** | Reti di questo PC, stato, il tuo accesso, chiave di rete (solo admin), *Aggiungi una rete*, *Lascia rete*. |
 | **Su questo PC** | Chi e' collegato a questo PC adesso (con *Disconnetti*) e registro eventi locale. Visibile anche senza login. |
 | **Utenti e permessi** | (admin) Utenti della rete, permessi per macchina, macchine registrate. |
@@ -135,6 +135,12 @@ Consigliata sui PC da assistere. Si installa da **Impostazioni > Installa serviz
 - **Segnalazione:** per presentarsi e scambiarsi i parametri di connessione i PC usano un topic di
   [ntfy](https://ntfy.sh) (servizio pubblico gratuito). I messaggi sono **cifrati AES-256-GCM** con la chiave di rete:
   il server vede solo dati illeggibili. Puoi usare un server ntfy tuo (Impostazioni > Connessione), uguale su tutti i PC.
+- **Limiti del server pubblico:** ntfy.sh limita il numero di messaggi al giorno per indirizzo IP (i PC dietro lo stesso
+  router condividono il limite). RemoteDesk annuncia ogni macchina ogni 5 minuti e su richiesta (*Aggiorna*); nella
+  sezione *Reti* vedi i messaggi usati oggi. Se il limite viene raggiunto la console lo segnala: in quel caso, o con
+  molte macchine, conviene un **server ntfy proprio**, per esempio su un piccolo VPS o un PC sempre acceso:
+  `docker run -d -p 80:80 binwiederhier/ntfy serve` e poi, su **tutti** i PC, Impostazioni > Connessione >
+  Server di segnalazione = `http://indirizzo-del-server` (meglio con HTTPS davanti).
 - **Dati:** schermo, input, file e audio viaggiano **direttamente** tra i PC (WebRTC), con STUN di Google/Cloudflare
   per attraversare i router.
 - **Firewall:** RemoteDesk deve poter ricevere connessioni UDP. Se Windows ha bloccato Python, i PC si vedono in
@@ -247,6 +253,7 @@ python app/remotedesk.py --agent-only --data A --port 47801 &
 python app/remotedesk.py --agent-only --data B --port 47802 &
 # poi in entrambe le console (http://127.0.0.1:47801 e :47802): Impostazioni > Server di segnalazione = http://127.0.0.1:8099
 ```
+Il server di prova simula anche il limite di messaggi (`GET /_limit?n=0`) e il conteggio (`/v1/account`).
 Variabili utili per i test: `RD_FAKE_MONITORS="0,0,800,900;800,0,800,900"` (simula due monitor),
 `RD_FAKE_AUDIO=1` (tono di prova), `RD_FP=<testo>` (impronta macchina fittizia).
 
@@ -266,6 +273,7 @@ compila `RemoteDesk.exe` con mingw-w64 e crea lo zip.
 |---|---|
 | Al primo avvio non compare "Entra in una rete" | Cartella copiata da un PC gia' configurato: dalla 2.2 viene rilevato automaticamente; altrimenti estrai lo zip originale. |
 | I PC si vedono ma la sessione non parte ("Connessione diretta non riuscita") | Firewall di Windows: `tools/Consenti-RemoteDesk-firewall.bat` su entrambi i PC (va messo nella cartella di RemoteDesk). Se i PC sono in reti diverse e restrittive: configura un TURN. |
+| Una macchina accesa risulta offline | Premi **Aggiorna**. Se compare l'avviso "limite di messaggi", il server di segnalazione pubblico ha esaurito il limite di oggi: usa un server ntfy proprio (vedi [Connessione](#connessione-segnalazione-firewall-e-turn)). |
 | "Nessuna risposta" | Il PC remoto non riceve: e' acceso? stesso server di segnalazione su entrambi? |
 | "Autenticazione non valida" / "non ha il permesso" | Utente o permessi: controlla in *Utenti e permessi*. |
 | Ctrl+Alt+Canc non funziona | Serve la modalita' servizio sul PC remoto. |

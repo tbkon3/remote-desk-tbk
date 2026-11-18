@@ -17,8 +17,8 @@ from . import auth
 from .common import VERSION, NetKey, current_user, os_label
 
 log = logging.getLogger("rd.net")
-PRESENCE_EVERY = 60
-OFFLINE_AFTER = 150
+PRESENCE_EVERY = 300      # annuncio periodico ogni 5 minuti (i server ntfy pubblici limitano i messaggi al giorno)
+OFFLINE_AFTER = 720       # offline se nessun segno di vita da 12 minuti (lo spegnimento regolare e' immediato)
 
 
 def net_id(name, key):
@@ -49,6 +49,10 @@ class Network:
         self.audit_waiters = {}    # rid -> lista risposte registro accessi
         self.audit_seen = {}
         self.conflict = False
+        self.last_presence = 0    # ultimo annuncio inviato
+        self.last_hello = 0       # ultima richiesta di ripresentarsi
+        self.limited = False      # il server ha rifiutato per troppi messaggi
+        self.quota = None         # {"used", "limit"} messaggi di oggi sul server, se lo comunica
 
     # ------------------------------------------------------------------ ciclo di vita
     def restart(self):
@@ -103,7 +107,7 @@ class Network:
         return self.cfg["signal"].rstrip("/")
 
     async def _main(self):
-        timeout = ClientTimeout(total=None, sock_connect=15, sock_read=PRESENCE_EVERY * 2 + 30)
+        timeout = ClientTimeout(total=None, sock_connect=15, sock_read=150)   # ntfy manda un keepalive ogni 45 s
         since = f"{OFFLINE_AFTER}s"
         async with ClientSession(timeout=timeout, trust_env=True) as s:
             self.session = s
@@ -144,13 +148,56 @@ class Network:
                     self.session = None
 
     async def _heartbeat(self):
+        asyncio.ensure_future(self._quota_loop())
         while True:
-            await asyncio.sleep(PRESENCE_EVERY + random.uniform(-5, 5))
+            await asyncio.sleep(PRESENCE_EVERY + random.uniform(-20, 20))
             if self.state == "online":
                 try:
                     await self.publish(self.presence())
                 except Exception as e:
                     log.debug("presence: %s", e)
+
+    async def _quota_loop(self):
+        """Messaggi usati oggi sul server ntfy (endpoint /v1/account, se disponibile)."""
+        while True:
+            if not (self.session and self.state == "online"):
+                await asyncio.sleep(10)
+                continue
+            try:
+                if True:
+                    async with self.session.get(f"{self.server}/v1/account", timeout=ClientTimeout(total=15)) as r:
+                        if r.status == 200:
+                            d = await r.json(content_type=None)
+                            lim = (d.get("limits") or {}).get("messages")
+                            used = (d.get("stats") or {}).get("messages")
+                            if isinstance(lim, int) and isinstance(used, int):
+                                self.quota = {"used": used, "limit": lim}
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(600)
+
+    async def refresh(self):
+        """Chiede a tutte le macchine della rete di ripresentarsi (al massimo ogni 15 secondi)."""
+        if time.time() - self.last_hello < 15 or self.state != "online":
+            return False
+        self.last_hello = time.time()
+        await self._safe_publish({"type": "hello"})
+        return True
+
+    def alive(self, frm):
+        """Segno di vita autenticato (risposta firmata ecc.): la macchina e' sicuramente accesa."""
+        if frm in self.machines:
+            self.machines[frm]["last_seen"] = time.time()
+        elif frm in self.reg.machines():
+            self.machines[frm] = {"id": frm, "name": self.reg.machines()[frm].get("name"), "os": "", "user": "",
+                                  "ver": "", "service": False, "sessions": 0, "accept": True, "dbv": 0,
+                                  "last_seen": time.time()}
+
+    def is_online(self, mid):
+        p = self.machines.get(mid)
+        return bool(p and time.time() - p["last_seen"] < OFFLINE_AFTER)
 
     def presence(self):
         a = self.agent
@@ -170,8 +217,17 @@ class Network:
         if obj.get("type") in ("presence", "bye"):
             obj["msig"] = auth.sign(self.agent.mkey, obj)
         async with session.post(f"{self.server}/{self.key.topic}", data=self.key.seal(obj)) as r:
+            if r.status == 429:
+                if not self.limited:
+                    log.warning("[%s] il server di segnalazione rifiuta i messaggi: limite giornaliero raggiunto", self.name)
+                    self.agent.log_event(f"Rete {self.name}: limite di messaggi del server di segnalazione raggiunto")
+                self.limited = True
+                raise RuntimeError("limite messaggi del server di segnalazione raggiunto")
             if r.status >= 300:
                 raise RuntimeError(f"HTTP {r.status}")
+            self.limited = False
+            if obj.get("type") == "presence":
+                self.last_presence = time.time()
             try:
                 ev = await r.json(content_type=None)
                 if ev.get("time"):
@@ -265,7 +321,7 @@ class Network:
             if box is not None and m.get("to") == self.cfg["id"]:
                 box.append((frm, m))
         elif t == "hello":
-            if age < 60:
+            if age < 60 and time.time() - self.last_presence > 20:   # niente risposte doppie se ho appena annunciato
                 asyncio.get_running_loop().call_later(random.uniform(0.2, 2.5),
                                                       lambda: asyncio.ensure_future(self._safe_presence()))
         elif t == "bye":
@@ -294,6 +350,7 @@ class Network:
             body = {"frm": frm, "to": self.cfg["id"], "sid": m.get("sid")}
             body.update({"h": auth.sdp_hash(m["sdp"])} if isinstance(m.get("sdp"), str) else {"err": str(m.get("error"))})
             if mach and auth.verify(mach["pub"], body, m.get("msig", "")):   # risposte non firmate: ignorate
+                self.alive(frm)
                 p[0].set_result(m)
 
     async def _safe_publish(self, obj, delay=0):

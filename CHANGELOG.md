@@ -1,5 +1,15 @@
 # Novita'
 
+## 2.2.2
+- Pulsante **Aggiorna** nella lista macchine: chiede a tutte le macchine accese di ripresentarsi subito.
+- Una macchina con cui hai una sessione aperta risulta sempre online, con il bollino **collegato**; anche ogni
+  risposta firmata della macchina conta come segno di vita.
+- Annunci di presenza ogni 5 minuti invece che ogni minuto (offline dopo 12 minuti senza segni di vita;
+  lo spegnimento regolare e' immediato): molti meno messaggi sul server di segnalazione.
+- Se il server di segnalazione rifiuta i messaggi per il limite giornaliero, la console lo segnala e la sezione
+  *Reti* mostra i messaggi usati oggi rispetto al limite.
+- Corretto: il pallino di stato della rete veniva disegnato come un riquadro arancione.
+
 ## 2.2.1
 - Il puntatore del mouse assume la forma di quello del PC remoto: doppia freccia sui bordi delle finestre,
   I nel testo, mano sui link, attesa, spostamento, ecc. I cursori personalizzati dei programmi vengono

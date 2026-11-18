@@ -47,7 +47,7 @@ main{flex:1;overflow:auto;padding:18px}
 .choice button b{font-size:17px}
 .choice button span{color:var(--mut);font-size:13px;line-height:1.5}
 .choice button:hover{border-color:var(--acc);box-shadow:0 4px 18px #2563eb22}
-.warn{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:10px;padding:12px 14px;margin:0 auto 14px;max-width:760px}
+.alertbox{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:10px;padding:12px 14px;margin:0 auto 14px;max-width:760px}
 table.t{width:100%;border-collapse:collapse;font-size:13px}
 table.t th,table.t td{padding:7px 8px;border-bottom:1px solid var(--bd);text-align:left;vertical-align:middle}
 table.t th{color:var(--mut);font-weight:500}
@@ -78,7 +78,7 @@ table.t select{padding:3px 6px;font-size:12px}
 
 <!-- ============ primo avvio ============ -->
 <section id="v-welcome" class="hide">
-  <div class="warn hide" id="clonedWarn"><b>Questa cartella era stata copiata da un altro PC.</b> Per sicurezza ho creato una nuova identita' per questo computer: aggiungilo alla rete con "Entra in una rete esistente". (La prossima volta copia lo zip originale, non la cartella gia' usata.)</div>
+  <div class="alertbox hide" id="clonedWarn"><b>Questa cartella era stata copiata da un altro PC.</b> Per sicurezza ho creato una nuova identita' per questo computer: aggiungilo alla rete con "Entra in una rete esistente". (La prossima volta copia lo zip originale, non la cartella gia' usata.)</div>
   <div style="text-align:center;margin-top:20px"><h2 style="margin:0" id="wTitle">Benvenuto in RemoteDesk</h2><p class="mut" id="wSub">Questo PC non fa ancora parte di nessuna rete. Cosa vuoi fare?</p></div>
   <div class="choice">
     <button data-start="join"><b>Entra in una rete esistente</b><span>Hai gia' configurato RemoteDesk su un altro PC. Ti servono: nome rete, chiave di rete e un utente amministratore. Serve almeno un PC della rete acceso.</span></button>
@@ -122,7 +122,8 @@ table.t select{padding:3px 6px;font-size:12px}
 
 <!-- ============ macchine ============ -->
 <section id="v-machines" class="hide">
-  <div class="bar"><input id="search" placeholder="Cerca per nome, ID, utente o rete..."></div>
+  <div class="bar"><input id="search" placeholder="Cerca per nome, ID, utente o rete...">
+    <button id="bRefresh" title="Chiede a tutte le macchine di ripresentarsi">&#8635; Aggiorna</button></div>
   <div id="machList"></div>
 </section>
 
@@ -311,7 +312,8 @@ function renderMachines(){
   const q = $('search').value.trim().toLowerCase();
   let html = '';
   for (const n of P.networks) {
-    const dot = `<span class="dot ${n.state === 'online' ? 'on' : 'warn'}"></span>`;
+    const dot = `<span class="dot ${n.state === 'online' && !n.limited ? 'on' : 'warn'}"></span>`;
+    if (n.limited) html += `<div class="alertbox" style="max-width:none">Rete ${esc(n.name)}: il server di segnalazione ha raggiunto il <b>limite di messaggi</b> per oggi. Le macchine possono risultare offline anche se sono accese. Soluzione: usare un server ntfy proprio (Impostazioni &gt; Connessione) oppure attendere il ripristino del limite.</div>`;
     if (!n.login) {
       html += `<div class="nethd">${dot} Rete ${esc(n.name)}</div>
         <div class="inl" data-nid="${n.nid}"><span class="mut">Non hai effettuato l'accesso a questa rete:</span>
@@ -326,6 +328,7 @@ function renderMachines(){
       const btn = (a, label, cls='') => r.has(a) ? `<button class="${cls}" data-a="${a}" ${on ? '' : 'disabled'}>${label}</button>` : '';
       return `<div class="m ${on ? '' : 'off'}" data-nid="${m.nid}" data-id="${esc(m.id)}" data-name="${esc(m.name)}">
         <div class="top"><span class="dot ${on ? 'on' : ''}"></span><span class="nm" title="${esc(m.name)}">${esc(m.name || 'senza nome')}</span>
+          ${m.my_session ? '<span class="pill" style="background:#dcfce7;color:#166534" title="Hai una finestra di sessione aperta con questa macchina">collegato</span>' : ''}
           ${m.service ? '<span class="pill" title="Servizio di sistema: Ctrl+Alt+Canc e UAC disponibili">servizio</span>' : ''}</div>
         <div class="sub">ID ${fid(m.id)}${m.os ? ' &middot; ' + esc(m.os) : ''}</div>
         <div class="sub">${on ? (esc(m.user || '') + ((Number(m.sessions) | 0) ? ` &middot; ${Number(m.sessions) | 0} sessioni` : '') + (m.accept === false ? ' &middot; accesso disabilitato' : '')) : (m.last_seen ? 'offline, visto ' + ago(m.last_seen) : 'offline')}</div>
@@ -354,13 +357,22 @@ $('machList').addEventListener('dblclick', ev => {
   openSession(m.nid, m.id, m.name, m.rights.includes('control') ? 'control' : m.rights.includes('view') ? 'view' : 'files');
 });
 $('search').oninput = () => renderMachines();
+$('bRefresh').onclick = async () => {
+  $('bRefresh').disabled = true;
+  const r = await post('/api/refresh');
+  toast(r.sent ? 'Richiesta inviata: le macchine accese compariranno in pochi secondi' : 'Aggiornamento appena fatto, riprova tra qualche secondo', 3000);
+  setTimeout(() => { $('bRefresh').disabled = false; refresh() }, 4000);
+  setTimeout(refresh, 2000);
+};
 
 // ---------------- reti
 function renderNetworks(){
   $('netTbl').innerHTML = '<tr><th>Rete</th><th>Stato</th><th>Il tuo accesso</th><th>Chiave di rete</th><th></th></tr>' + P.networks.map(n => {
     const adm = S.admin_nets[n.nid];
     return `<tr><td><b>${esc(n.name)}</b></td><td><span class="dot ${n.state === 'online' ? 'on' : 'warn'}"></span> ${esc(n.state)}${n.registered ? '' : ' <span class="pill">PC rimosso dalla rete</span>'}${n.conflict ? ' <span class="pill" style="background:#fee2e2;color:#991b1b" title="Due versioni diverse del registro utenti: lascia la rete e rientra con un amministratore attuale">registro in conflitto</span>' : ''}</td>
-      <td>${n.login ? esc(n.login.name || n.login.user) + (n.login.admin ? ' (admin)' : '') : '<span class="mut">non effettuato</span>'}</td>
+      <td>${n.login ? esc(n.login.name || n.login.user) + (n.login.admin ? ' (admin)' : '') : '<span class="mut">non effettuato</span>'}
+        ${n.quota ? `<div class="mut" style="font-size:12px">messaggi oggi sul server: ${n.quota.used | 0} / ${n.quota.limit | 0}</div>` : ''}
+        ${n.limited ? '<div style="color:var(--bad);font-size:12px">limite messaggi raggiunto</div>' : ''}</td>
       <td>${adm ? `<span class="key" style="display:inline-block;font-size:12px;padding:3px 8px" data-key="${esc(adm.key)}">••••••</span> <button data-show="${n.nid}">Mostra</button>` : '<span class="mut">solo admin</span>'}</td>
       <td style="text-align:right;white-space:nowrap">${n.login ? `<button data-out="${n.nid}">Esci</button>` : ''} <button class="ghost" data-leave="${n.nid}">Lascia rete</button></td></tr>`;
   }).join('');

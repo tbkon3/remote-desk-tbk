@@ -1,4 +1,4 @@
-﻿REMOTEDESK 2.2 - accesso remoto tra le tue macchine, senza server propri
+﻿REMOTEDESK 2.2.2 - accesso remoto tra le tue macchine, senza server propri
 =========================================================================
 
 CONTENUTO
@@ -57,6 +57,8 @@ UTENTI E PERMESSI
     un permesso, le sessioni in corso di quell'utente vengono chiuse subito.
 
 USO
+  In "Macchine" il pulsante "Aggiorna" chiede a tutte le macchine accese di
+  ripresentarsi; il bollino "collegato" indica una sessione aperta da questo PC.
   Console > Macchine: le macchine accese sono in verde. "Controlla", "Guarda"
   o "File" aprono una finestra ridimensionabile per ogni sessione.
   Nella finestra di sessione:

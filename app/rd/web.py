@@ -103,6 +103,7 @@ def make_app(agent, port, on_quit):
         for n in agent.nets.values():
             lg = lgs.get(n.nid)
             nets.append({"nid": n.nid, "name": n.name, "state": n.state, "conflict": n.conflict,
+                         "limited": n.limited, "quota": n.quota,
                          "registered": cfg["id"] in n.reg.machines(),
                          "login": {"user": lg["user"], "admin": n.reg.is_admin(lg["user"]),
                                    "name": (n.reg.user(lg["user"]) or {}).get("name")} if lg else None})
@@ -213,21 +214,21 @@ def make_app(agent, port, on_quit):
                 if not r:
                     continue
                 p = n.machines.get(mid)
-                on = bool(p and now - p["last_seen"] < 150)
+                mine = now - agent.outgoing.get((nid, mid), 0) < 60   # sessione aperta da questo PC
+                on = n.is_online(mid) or mine
                 machines.append({"nid": nid, "net": n.name, "id": mid,
                                  "name": (p or mm).get("name") or mm.get("name"), "online": on,
                                  "os": (p or {}).get("os", ""), "user": (p or {}).get("user", ""),
                                  "service": (p or {}).get("service"), "sessions": (p or {}).get("sessions"),
                                  "accept": (p or {}).get("accept", True), "rights": sorted(r),
-                                 "last_seen": int(p["last_seen"]) if p else 0})
+                                 "last_seen": int(p["last_seen"]) if p else 0, "my_session": mine})
             if reg.is_admin(lg["user"]):
                 admin_nets[nid] = {
                     "name": n.name, "v": reg.version, "key": n.entry["key"],
                     "users": {u: {"name": x.get("name"), "admin": bool(x.get("admin")), "perms": x.get("perms", {})}
                               for u, x in reg.users().items()},
                     "machines": {mid: {"name": (n.machines.get(mid) or x).get("name") or x.get("name"),
-                                       "online": bool(n.machines.get(mid) and
-                                                      now - n.machines[mid]["last_seen"] < 150)}
+                                       "online": n.is_online(mid)}
                                  for mid, x in reg.machines().items()},
                 }
         machines.sort(key=lambda x: (not x["online"], x["net"].lower(), (x["name"] or "").lower()))
@@ -253,6 +254,21 @@ def make_app(agent, port, on_quit):
             return web.json_response({"sdp": sdp})
         except Exception as e:
             return err(e)
+
+    async def refresh(req):
+        lgs = need_login(req)
+        sent = [await agent.nets[nid].refresh() for nid in lgs if nid in agent.nets]
+        return web.json_response({"ok": True, "sent": any(sent)})
+
+    async def session_alive(req):
+        """La finestra di sessione segnala che e' collegata: la macchina e' accesa."""
+        lgs = need_login(req)
+        b = await req.json()
+        nid, mid = b.get("nid"), str(b.get("id", ""))
+        if nid in lgs and nid in agent.nets and mid in agent.nets[nid].reg.machines():
+            agent.outgoing[(nid, mid)] = time.time()
+            agent.nets[nid].alive(mid)
+        return web.json_response({"ok": True})
 
     async def clip_get(req):
         need_login(req)
@@ -436,6 +452,8 @@ def make_app(agent, port, on_quit):
     r.add_post("/api/quit", handover)
     r.add_get("/api/state", state)
     r.add_post("/api/connect", connect)
+    r.add_post("/api/refresh", refresh)
+    r.add_post("/api/session/alive", session_alive)
     r.add_get("/api/clip", clip_get)
     r.add_post("/api/clip", clip_set)
     r.add_post("/api/settings", settings)
