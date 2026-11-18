@@ -43,6 +43,9 @@ rm -f "../dist/RemoteDesk-$VERSION.zip"
 ( cd ../dist && sha256sum "RemoteDesk-$VERSION.zip" > "RemoteDesk-$VERSION.zip.sha256" )
 echo "Creato dist/RemoteDesk-$VERSION.zip"
 
+# Link di download diretto nel README
+sed -i -E "s#(dist/)?RemoteDesk-[0-9]+\.[0-9]+\.[0-9]+\.zip#\1RemoteDesk-$VERSION.zip#g; s#Scarica RemoteDesk [0-9]+\.[0-9]+\.[0-9]+ per#Scarica RemoteDesk $VERSION per#" ../README.md
+
 # 6) Manifesto degli aggiornamenti FIRMATO (dist/latest.json). Serve la chiave privata di rilascio:
 #    RD_RELEASE_KEY=/percorso/remotedesk-release.key ./build/build_bundle.sh
 #    La chiave NON va mai messa nella repository.
