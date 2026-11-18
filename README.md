@@ -253,7 +253,7 @@ Variabili utili per i test: `RD_FAKE_MONITORS="0,0,800,900;800,0,800,900"` (simu
 ### Costruire lo zip per Windows (da Linux)
 ```bash
 sudo apt install gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 zip unzip
-./build/build_bundle.sh               # crea build/RemoteDesk-<versione>.zip
+./build/build_bundle.sh               # crea dist/RemoteDesk-<versione>.zip (+ .sha256)
 ```
 Lo script scarica Python 3.12 per Windows (pacchetto ufficiale NuGet), le wheel delle librerie per `win_amd64`,
 compila `RemoteDesk.exe` con mingw-w64 e crea lo zip.

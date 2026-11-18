@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Costruisce il pacchetto portabile per Windows (RemoteDesk-<versione>.zip) da Linux.
+# Costruisce il pacchetto portabile per Windows in dist/RemoteDesk-<versione>.zip, da Linux.
 # Requisiti: python3 + pip, curl, unzip, zip, mingw-w64 (x86_64-w64-mingw32-gcc e windres).
 #   Ubuntu/Debian:  sudo apt install gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 zip unzip
 set -euo pipefail
@@ -26,7 +26,7 @@ rm -rf "$OUT/runtime/Lib/site-packages/numpy"*   # non serve (e sotto Wine si bl
 
 # 3) RemoteDesk.exe (piccolo avviatore C con icona)
 x86_64-w64-mingw32-windres launcher.rc -O coff -o launcher.res
-x86_64-w64-mingw32-gcc -O2 -municode -mwindows -s launcher.c launcher.res -o "$OUT/RemoteDesk.exe"
+x86_64-w64-mingw32-gcc -O2 -municode -mwindows -s -Wl,--no-insert-timestamp launcher.c launcher.res -o "$OUT/RemoteDesk.exe"
 
 # 4) Applicazione e istruzioni
 cp -r ../app "$OUT/app"
@@ -36,6 +36,9 @@ import sys; s = open("LEGGIMI.txt", encoding="utf-8-sig").read().replace("\r\n",
 open(sys.argv[1], "w", encoding="utf-8-sig", newline="\r\n").write(s)
 PY
 
-# 5) Zip
-( cd out && zip -qr9 "../RemoteDesk-$VERSION.zip" RemoteDesk )
-echo "Creato build/RemoteDesk-$VERSION.zip"
+# 5) Zip in dist/ (con impronta SHA-256)
+mkdir -p ../dist
+rm -f "../dist/RemoteDesk-$VERSION.zip"
+( cd out && zip -qrX9 "../../dist/RemoteDesk-$VERSION.zip" RemoteDesk )
+( cd ../dist && sha256sum "RemoteDesk-$VERSION.zip" > "RemoteDesk-$VERSION.zip.sha256" )
+echo "Creato dist/RemoteDesk-$VERSION.zip"
