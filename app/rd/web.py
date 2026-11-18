@@ -21,7 +21,7 @@ if WIN:
 
 log = logging.getLogger("rd.web")
 MACHINE_SETTINGS = {"name", "accept_incoming", "ask_confirm", "allow_control", "allow_files", "allow_clipboard",
-                    "signal", "turn_url", "turn_user", "turn_pass", "incoming_dir"}
+                    "signal", "turn_url", "turn_user", "turn_pass", "incoming_dir", "update_url", "auto_update"}
 COOKIE = "rdtok"
 
 
@@ -124,6 +124,7 @@ def make_app(agent, port, on_quit):
             "service": {"installed": service_installed(agent.data_dir),
                         "active": agent.service_mode, "supported": WIN},
             "platform": sys.platform,
+            "update": agent.updater.status(),
         })
 
     async def ping(_):
@@ -221,7 +222,8 @@ def make_app(agent, port, on_quit):
                                  "os": (p or {}).get("os", ""), "user": (p or {}).get("user", ""),
                                  "service": (p or {}).get("service"), "sessions": (p or {}).get("sessions"),
                                  "accept": (p or {}).get("accept", True), "rights": sorted(r),
-                                 "last_seen": int(p["last_seen"]) if p else 0, "my_session": mine})
+                                 "last_seen": int(p["last_seen"]) if p else 0, "my_session": mine,
+                                 "ver": (p or {}).get("ver", ""), "admin": reg.is_admin(lg["user"])})
             if reg.is_admin(lg["user"]):
                 admin_nets[nid] = {
                     "name": n.name, "v": reg.version, "key": n.entry["key"],
@@ -254,6 +256,39 @@ def make_app(agent, port, on_quit):
             return web.json_response({"sdp": sdp})
         except Exception as e:
             return err(e)
+
+    async def update_check(req):
+        need_local_admin(req)
+        await agent.updater.check()
+        return web.json_response(agent.updater.status())
+
+    async def update_install(req):
+        need_local_admin(req)
+        if not agent.updater.available():
+            await agent.updater.check()
+        if not agent.updater.available():
+            return err(agent.updater.error or "Nessun aggiornamento disponibile")
+        user = ", ".join(sorted({x["user"] for x in login_of(req).values()})) or "console"
+
+        async def go():
+            try:
+                await agent.updater.install(f"{user} (da questo PC)")
+            except Exception as e:
+                log.warning("aggiornamento: %s", e)
+        asyncio.ensure_future(go())
+        return web.json_response({"ok": True})
+
+    async def machine_update(req):
+        b = await req.json()
+        n, lg = need_net(req, b.get("nid"), admin=True)
+        mid = str(b.get("id", ""))
+        if mid == cfg["id"]:
+            return await update_install(req)
+        try:
+            await n.send_update(mid, lg)
+        except Exception as e:
+            return err(e)
+        return web.json_response({"ok": True})
 
     async def refresh(req):
         lgs = need_login(req)
@@ -289,12 +324,14 @@ def make_app(agent, port, on_quit):
         for k, v in b.items():
             if k not in MACHINE_SETTINGS:
                 continue
-            if k in ("accept_incoming", "ask_confirm", "allow_control", "allow_files", "allow_clipboard"):
+            if k in ("accept_incoming", "ask_confirm", "allow_control", "allow_files", "allow_clipboard", "auto_update"):
                 upd[k] = bool(v)
             else:
                 upd[k] = str(v or "").strip()[:500]
         if "signal" in upd and not re.match(r"^https?://[^\s/]+", upd["signal"]):
             return err("Server di segnalazione non valido (deve iniziare con http:// o https://)")
+        if upd.get("update_url") and not upd["update_url"].startswith("https://"):
+            return err("L'indirizzo degli aggiornamenti deve iniziare con https://")
         if "name" in upd and not upd["name"]:
             return err("Il nome del PC non puo' essere vuoto")
         old_name, old_signal = cfg["name"], cfg["signal"]
@@ -453,6 +490,9 @@ def make_app(agent, port, on_quit):
     r.add_get("/api/state", state)
     r.add_post("/api/connect", connect)
     r.add_post("/api/refresh", refresh)
+    r.add_post("/api/update/check", update_check)
+    r.add_post("/api/update/install", update_install)
+    r.add_post("/api/machines/update", machine_update)
     r.add_post("/api/session/alive", session_alive)
     r.add_get("/api/clip", clip_get)
     r.add_post("/api/clip", clip_set)

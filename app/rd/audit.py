@@ -33,6 +33,7 @@ KINDS = {
     "auth_fail": "Accesso negato",
     "clip_in": "Appunti ricevuti",
     "clip_out": "Appunti inviati",
+    "update": "Aggiornamento",
 }
 
 

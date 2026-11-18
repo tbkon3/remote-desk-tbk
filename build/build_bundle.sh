@@ -42,3 +42,28 @@ rm -f "../dist/RemoteDesk-$VERSION.zip"
 ( cd out && zip -qrX9 "../../dist/RemoteDesk-$VERSION.zip" RemoteDesk )
 ( cd ../dist && sha256sum "RemoteDesk-$VERSION.zip" > "RemoteDesk-$VERSION.zip.sha256" )
 echo "Creato dist/RemoteDesk-$VERSION.zip"
+
+# 6) Manifesto degli aggiornamenti FIRMATO (dist/latest.json). Serve la chiave privata di rilascio:
+#    RD_RELEASE_KEY=/percorso/remotedesk-release.key ./build/build_bundle.sh
+#    La chiave NON va mai messa nella repository.
+if [ -n "${RD_RELEASE_KEY:-}" ]; then
+  python3 - "$VERSION" "${RD_UPDATE_BASE:-https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist}" <<'PY'
+import base64, hashlib, json, os, re, sys, time
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+ver, base = sys.argv[1], sys.argv[2].rstrip("/")
+z = f"../dist/RemoteDesk-{ver}.zip"
+key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(open(os.environ["RD_RELEASE_KEY"]).read().strip()))
+log = open("../CHANGELOG.md", encoding="utf-8").read()
+m = re.search(r"## " + re.escape(ver) + r"\n(.*?)(\n## |\Z)", log, re.S)
+notes = re.sub(r"[*`]", "", m.group(1)).strip() if m else ""
+body = {"version": ver, "file": os.path.basename(z), "url": f"{base}/{os.path.basename(z)}",
+        "sha256": hashlib.sha256(open(z, "rb").read()).hexdigest(), "size": os.path.getsize(z),
+        "date": time.strftime("%Y-%m-%d"), "notes": notes[:1500]}
+canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+body["sig"] = base64.b64encode(key.sign(canon)).decode()
+json.dump(body, open("../dist/latest.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+print("Creato dist/latest.json (firmato)")
+PY
+else
+  echo "ATTENZIONE: RD_RELEASE_KEY non impostata: dist/latest.json non aggiornato (i PC non vedranno questa versione)"
+fi

@@ -124,6 +124,7 @@ table.t select{padding:3px 6px;font-size:12px}
 <section id="v-machines" class="hide">
   <div class="bar"><input id="search" placeholder="Cerca per nome, ID, utente o rete...">
     <button id="bRefresh" title="Chiede a tutte le macchine di ripresentarsi">&#8635; Aggiorna</button></div>
+  <div id="updBanner" class="alertbox hide" style="max-width:none;background:#e0ecff;color:#1e3a8a;border-color:#93c5fd"></div>
   <div id="machList"></div>
 </section>
 
@@ -209,6 +210,15 @@ table.t select{padding:3px 6px;font-size:12px}
       <div><div id="svcTxt" class="mut" style="margin-bottom:8px"></div><button id="svcBtn">Installa servizio</button></div>
     </div>
     <p class="mut" style="margin-top:12px;font-size:13px">La modalita' servizio (consigliata sui PC da assistere) fa partire RemoteDesk con Windows anche senza nessun utente collegato e abilita <b>Ctrl+Alt+Canc</b>, finestre <b>UAC</b> e <b>schermata di accesso</b>. Richiede i diritti di amministratore di Windows; estrai prima il pacchetto in una cartella fissa (es. <code>C:\RemoteDesk</code>).</p>
+  </div>
+  <div class="card">
+    <h3>Aggiornamenti</h3>
+    <div class="form">
+      <label class="l">Stato</label><div><span id="updTxt" class="mut"></span> <button id="updCheck">Controlla ora</button></div>
+      <label class="l">Installazione automatica</label><label class="chk"><input type="checkbox" data-s="auto_update"> installa da solo le nuove versioni quando nessuno e' collegato</label>
+      <label class="l">Indirizzo aggiornamenti</label><input data-s="update_url" placeholder="(predefinito: repository ufficiale)">
+    </div>
+    <p class="mut" style="font-size:13px">Vengono installati solo pacchetti firmati con la chiave di rilascio di RemoteDesk. Se la nuova versione non parte, si torna da soli alla precedente. Con il servizio installato si aggiorna anche il servizio.</p>
   </div>
   <div class="card">
     <h3>Connessione</h3>
@@ -308,7 +318,24 @@ function fillNetSelects(){
 }
 
 // ---------------- macchine (raggruppate per rete)
+const vt = v => String(v || '').split(/\D+/).filter(Boolean).map(Number);
+function vless(a, b){ const x = vt(a), y = vt(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i]||0) !== (y[i]||0)) return (x[i]||0) < (y[i]||0) } return false }
+function renderUpdate(){
+  const u = P.update || {}; const box = $('updBanner');
+  if (!P.admin_any || !u.supported || (!u.available && !['downloading','installing'].includes(u.state))) { box.classList.add('hide'); return }
+  box.classList.remove('hide');
+  if (u.state === 'downloading') box.innerHTML = `Download di RemoteDesk ${esc(u.latest)} in corso... ${u.progress | 0}%`;
+  else if (u.state === 'installing') box.innerHTML = `Installazione di RemoteDesk ${esc(u.latest)}: il programma si riavvia da solo tra pochi secondi.`;
+  else box.innerHTML = `<b>E' disponibile RemoteDesk ${esc(u.latest)}</b> (questo PC ha la ${esc(u.current)}). ${u.notes ? '<br><span style="font-size:13px">' + esc(u.notes) + '</span>' : ''}
+     <div class="row" style="margin-top:8px"><button class="pri" id="updGo">Aggiorna questo PC</button></div>`;
+  const g = $('updGo'); if (g) g.onclick = async () => {
+    if (!confirm(`Installare RemoteDesk ${u.latest}? Il programma si chiude e riparte da solo.`)) return;
+    const r = await post('/api/update/install'); toast(r.error || 'Aggiornamento avviato', 5000); refresh();
+  };
+}
+
 function renderMachines(){
+  renderUpdate();
   const q = $('search').value.trim().toLowerCase();
   let html = '';
   for (const n of P.networks) {
@@ -326,13 +353,15 @@ function renderMachines(){
     html += list.length ? '<div class="grid">' + list.map(m => {
       const r = new Set(m.rights), on = m.online;
       const btn = (a, label, cls='') => r.has(a) ? `<button class="${cls}" data-a="${a}" ${on ? '' : 'disabled'}>${label}</button>` : '';
+      const old = m.admin && on && m.ver && P.update.latest && vless(m.ver, P.update.latest);
       return `<div class="m ${on ? '' : 'off'}" data-nid="${m.nid}" data-id="${esc(m.id)}" data-name="${esc(m.name)}">
         <div class="top"><span class="dot ${on ? 'on' : ''}"></span><span class="nm" title="${esc(m.name)}">${esc(m.name || 'senza nome')}</span>
           ${m.my_session ? '<span class="pill" style="background:#dcfce7;color:#166534" title="Hai una finestra di sessione aperta con questa macchina">collegato</span>' : ''}
           ${m.service ? '<span class="pill" title="Servizio di sistema: Ctrl+Alt+Canc e UAC disponibili">servizio</span>' : ''}</div>
         <div class="sub">ID ${fid(m.id)}${m.os ? ' &middot; ' + esc(m.os) : ''}</div>
         <div class="sub">${on ? (esc(m.user || '') + ((Number(m.sessions) | 0) ? ` &middot; ${Number(m.sessions) | 0} sessioni` : '') + (m.accept === false ? ' &middot; accesso disabilitato' : '')) : (m.last_seen ? 'offline, visto ' + ago(m.last_seen) : 'offline')}</div>
-        <div class="acts">${btn('control', 'Controlla', 'pri')}${btn('view', 'Guarda')}${btn('files', 'File')}</div>
+        <div class="acts">${btn('control', 'Controlla', 'pri')}${btn('view', 'Guarda')}${btn('files', 'File')}
+          ${old ? `<button data-upd="1" title="Questa macchina ha la versione ${esc(m.ver)}: aggiorna a ${esc(P.update.latest)}">Aggiorna ${esc(m.ver)} &rarr; ${esc(P.update.latest)}</button>` : ''}</div>
       </div>`}).join('') + '</div>'
       : `<div class="empty">${q ? 'Nessun risultato.' : 'Nessuna macchina su cui hai permessi in questa rete.'}</div>`;
   }
@@ -348,7 +377,13 @@ $('machList').addEventListener('click', async ev => {
     if (r.error) toast(r.error); else refresh();
     return;
   }
-  const c = b.closest('.m'); if (c) openSession(c.dataset.nid, c.dataset.id, c.dataset.name, b.dataset.a);
+  const c = b.closest('.m'); if (!c) return;
+  if (b.dataset.upd) {
+    if (!confirm(`Aggiornare RemoteDesk su ${c.dataset.name} alla versione ${P.update.latest}?\n\nLa macchina scarica l'aggiornamento, si riavvia e torna disponibile da sola (circa 1-2 minuti). Le sessioni aperte si ricollegano automaticamente.`)) return;
+    const r = await post('/api/machines/update', {nid:c.dataset.nid, id:c.dataset.id});
+    toast(r.error || 'Comando inviato: la macchina si sta aggiornando', 6000); return;
+  }
+  openSession(c.dataset.nid, c.dataset.id, c.dataset.name, b.dataset.a);
 });
 $('machList').addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.classList.contains('ip')) ev.target.closest('.inl').querySelector('button').click() });
 $('machList').addEventListener('dblclick', ev => {
@@ -581,7 +616,11 @@ function renderSettings(){
   $('autostart').checked = S.autostart || P.service.installed;
   $('autostart').disabled = P.platform !== 'win32' || P.service.installed;
   $('ver').textContent = 'RemoteDesk ' + P.version;
+  const u = P.update || {};
+  $('updTxt').textContent = !u.supported ? 'Disponibile solo su Windows.' : u.state === 'error' ? u.error :
+    u.available ? `Disponibile la ${u.latest} (installata ${u.current}).` : u.last_check ? `Versione ${u.current}: aggiornata.` : `Versione ${u.current}.`;
 }
+$('updCheck').onclick = async () => { $('updCheck').disabled = true; await post('/api/update/check'); $('updCheck').disabled = false; refresh() };
 document.querySelectorAll('[data-s]').forEach(el => el.addEventListener('change', async () => {
   const r = await post('/api/settings', {[el.dataset.s]: el.type === 'checkbox' ? el.checked : el.value.trim()});
   toast(r.error || 'Impostazione salvata', 1500); refresh();

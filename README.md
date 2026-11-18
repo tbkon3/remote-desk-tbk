@@ -9,8 +9,8 @@ Un'unica cartella portabile (`RemoteDesk.exe` + Python incluso): nessuna install
 - Piu' monitor, file manager, appunti condivisi, audio, chat, registro accessi
 - Connessione diretta tra i PC (WebRTC, cifrata), segnalazione cifrata end-to-end
 
-> **Download:** [**dist/RemoteDesk-2.2.2.zip**](dist/RemoteDesk-2.2.2.zip) (53 MB, pulsante "Download raw"; impronta
-> SHA-256 in [dist/RemoteDesk-2.2.2.zip.sha256](dist/RemoteDesk-2.2.2.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
+> **Download:** [**dist/RemoteDesk-2.3.0.zip**](dist/RemoteDesk-2.3.0.zip) (53 MB, pulsante "Download raw"; impronta
+> SHA-256 in [dist/RemoteDesk-2.3.0.zip.sha256](dist/RemoteDesk-2.3.0.zip.sha256)). Estrailo (es. in `C:\RemoteDesk`).
 > Su ogni PC estrai **lo zip originale**: non copiare una cartella gia' usata.
 
 ---
@@ -20,6 +20,7 @@ Un'unica cartella portabile (`RemoteDesk.exe` + Python incluso): nessuna install
 2. [Uso](#uso)
 3. [Reti, utenti e permessi](#reti-utenti-e-permessi)
 4. [Modalita' servizio (Ctrl+Alt+Canc, UAC, accesso)](#modalita-servizio)
+4. [Aggiornamenti](#aggiornamenti)
 5. [Connessione: segnalazione, firewall e TURN](#connessione-segnalazione-firewall-e-turn)
 6. [Dove sono i dati](#dove-sono-i-dati)
 7. [Sicurezza](#sicurezza)
@@ -120,6 +121,40 @@ Consigliata sui PC da assistere. Si installa da **Impostazioni > Installa serviz
   normali) e tiene i dati in `C:\ProgramData\RemoteDesk\data` (solo SYSTEM e Amministratori).
 - Il file manager, anche in modalita' servizio, opera **con i diritti dell'utente collegato a Windows**, non come SYSTEM.
 - **Rimozione:** tasto destro sull'icona di RemoteDesk > *Rimuovi servizio...*, oppure `tools/Rimuovi-servizio-RemoteDesk.bat`.
+
+---
+
+## Aggiornamenti
+
+Dalla versione 2.3.0 RemoteDesk si aggiorna da solo (solo Windows):
+
+- **Controllo:** ogni 6 ore (e all'avvio) legge il manifesto `dist/latest.json` di questa repository. Se c'e' una
+  versione nuova, nella console compare **"Aggiorna questo PC"** (Impostazioni > Aggiornamenti > *Controlla ora* per
+  forzare il controllo).
+- **Macchine remote:** nella lista macchine, quelle con una versione vecchia hanno il pulsante **"Aggiorna x -> y"**
+  (solo per gli amministratori della rete). Anche dalla finestra di sessione: *Azioni > Aggiorna RemoteDesk su questo
+  PC*. Il comando e' firmato dall'amministratore e la macchina lo verifica. **Se sei collegato, la finestra mostra
+  "Il PC remoto si sta aggiornando" e si ricollega da sola** (in prova: circa 30 secondi).
+- **Servizio:** si aggiorna anche lui. Un'attivita' temporanea `RemoteDeskUpdate` (SYSTEM) ferma il servizio,
+  sostituisce `C:\Program Files\RemoteDesk`, riavvia il servizio e l'icona dell'utente collegato, poi si cancella.
+- **Automatico (facoltativo):** Impostazioni > Aggiornamenti > *installa da solo le nuove versioni quando nessuno e'
+  collegato*.
+- **Sicurezza:** viene installato solo un pacchetto il cui manifesto e' **firmato con la chiave di rilascio** (Ed25519,
+  la chiave pubblica e' nel programma) e il cui zip ha **l'impronta SHA-256** indicata nel manifesto. Chi riuscisse a
+  modificare la repository senza la chiave privata non puo' distribuire aggiornamenti.
+- **Ritorno automatico:** se la nuova versione non risponde entro 2 minuti, si torna da soli alla precedente (la copia
+  non riuscita resta come `<cartella>.fallito`). Log: `...\data\logs\update.log`.
+- Le versioni **precedenti alla 2.3.0** non hanno l'aggiornamento automatico: vanno aggiornate a mano una volta.
+
+### Pubblicare una nuova versione (manutentore)
+1. Aggiorna `VERSION` in `app/rd/common.py` e aggiungi la sezione in `CHANGELOG.md` (diventa la nota mostrata nei PC).
+2. `RD_RELEASE_KEY=/percorso/remotedesk-release.key ./build/build_bundle.sh` crea `dist/RemoteDesk-<versione>.zip`,
+   `.sha256` e `dist/latest.json` **firmato**.
+3. Togli dalla cartella `dist/` lo zip della versione precedente, fai commit e push: entro 6 ore tutti i PC la vedono.
+
+La chiave privata (`remotedesk-release.key`) **non deve mai finire nella repository** (e' esclusa da `.gitignore`):
+conservala in un posto sicuro. Se la perdi, per cambiarla serve una versione con la nuova chiave pubblica, installata a
+mano una volta su ogni PC.
 
 ---
 
@@ -278,6 +313,7 @@ compila `RemoteDesk.exe` con mingw-w64 e crea lo zip.
 | "Autenticazione non valida" / "non ha il permesso" | Utente o permessi: controlla in *Utenti e permessi*. |
 | Ctrl+Alt+Canc non funziona | Serve la modalita' servizio sul PC remoto. |
 | Voglio togliere il servizio | Icona > *Rimuovi servizio...* oppure `tools/Rimuovi-servizio-RemoteDesk.bat` (doppio clic, conferma). |
+| L'aggiornamento non parte o torna indietro | Leggi `...\data\logs\update.log`. In modalita' utente la cartella di RemoteDesk deve essere modificabile dall'utente (non in Program Files). |
 | "registro in conflitto" in *Reti* | Due versioni diverse del registro utenti: lascia la rete e rientra con un amministratore attuale. |
 
 Log: `%LOCALAPPDATA%\RemoteDesk\data\logs\app.log` (modalita' utente) oppure

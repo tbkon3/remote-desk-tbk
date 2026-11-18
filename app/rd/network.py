@@ -178,6 +178,23 @@ class Network:
                 pass
             await asyncio.sleep(600)
 
+    async def _run_update(self, user):
+        try:
+            await self.agent.updater.install(f"{user} (rete {self.name})")
+        except Exception as e:
+            log.warning("aggiornamento richiesto da %s non eseguito: %s", user, e)
+            self.agent.log_event(f"Aggiornamento richiesto da {user} non eseguito: {e}")
+
+    async def send_update(self, to, lg):
+        """Chiede alla macchina 'to' di aggiornarsi (comando firmato dall'amministratore)."""
+        if not self.reg.is_admin(lg["user"]):
+            raise RuntimeError("Serve un amministratore di questa rete")
+        if to not in self.reg.machines():
+            raise RuntimeError("Macchina non registrata")
+        body = {"frm": self.cfg["id"], "to": to, "user": lg["user"], "ats": int(self.server_now()), "cmd": "update",
+                "rid": secrets.token_hex(12)}
+        await self.publish({"type": "updcmd", **body, "sig": auth.sign(lg["priv"], body)})
+
     async def refresh(self):
         """Chiede a tutte le macchine della rete di ripresentarsi (al massimo ogni 15 secondi)."""
         if time.time() - self.last_hello < 15 or self.state != "online":
@@ -329,6 +346,17 @@ class Network:
                 self.machines[frm]["last_seen"] = 0
         elif m.get("to") != self.cfg["id"]:
             return
+        elif t == "updcmd":
+            # comando di aggiornamento: solo da un amministratore di questa rete, firmato e recente
+            body = {k: m.get(k) for k in ("frm", "to", "user", "ats", "cmd", "rid")}
+            u = self.reg.user(m.get("user") or "")
+            seen = self.agent.seen_sids
+            if (body["cmd"] != "update" or not self.reg.is_admin(m.get("user") or "") or not isinstance(body["ats"], int)
+                    or abs(ev.get("time", 0) - body["ats"]) > 120 or body["rid"] in seen
+                    or not auth.verify(u["pub"], body, m.get("sig", ""))):
+                return
+            seen[body["rid"]] = time.time()
+            asyncio.ensure_future(self._run_update(body["user"]))
         elif t == "offer":
             sid = m.get("sid")
             # anti-replay: firma recente, rispetto all'orario del server, e sid mai visto

@@ -57,6 +57,7 @@ async def run_agent(data_dir, port, service_mode=False, parent=None, stop_flag=N
     from rd.common import Config
     cfg = Config(data_dir)
     agent = Agent(cfg, data_dir, service_mode=service_mode)
+    agent.port = port
     loop = asyncio.get_running_loop()
     app = make_app(agent, port, lambda: agent.stop_event.set())
     runner = web.AppRunner(app, access_log=None)
@@ -75,7 +76,7 @@ async def run_agent(data_dir, port, service_mode=False, parent=None, stop_flag=N
     log.info("agente pronto: ID %s, http://127.0.0.1:%s/ (servizio=%s)", fmt_id(cfg["id"]), port, service_mode)
     agent.start_networks()
     tasks = [asyncio.ensure_future(agent.clip_watch()), asyncio.ensure_future(agent.housekeeping()),
-             asyncio.ensure_future(agent.cursor_watch())]
+             asyncio.ensure_future(agent.cursor_watch()), asyncio.ensure_future(agent.updater.loop())]
     if parent:
         tasks.append(asyncio.ensure_future(agent.watch_parent(parent)))
     if stop_flag is not None:
@@ -91,19 +92,21 @@ async def run_agent(data_dir, port, service_mode=False, parent=None, stop_flag=N
             t.cancel()
         await agent.shutdown()
         await runner.cleanup()
-        log.info("agente fermato")
+        log.info("agente fermato" + (" per aggiornamento" if agent.updating else ""))
+    return agent.updating
 
 
 class AgentThread:
     def __init__(self, data_dir, port):
         self.data_dir, self.port = data_dir, port
         self.stop_flag = threading.Event()
+        self.updating = False
         self.thread = threading.Thread(target=self._run, daemon=True, name="agent")
         self.thread.start()
 
     def _run(self):
         try:
-            asyncio.run(run_agent(self.data_dir, self.port, stop_flag=self.stop_flag))
+            self.updating = bool(asyncio.run(run_agent(self.data_dir, self.port, stop_flag=self.stop_flag)))
         except Exception:
             log.exception("agente terminato con errore")
 
@@ -162,6 +165,10 @@ class App:
     def watchdog(self):
         while not self.quit.is_set():
             try:
+                if self.agent and self.agent.updating:   # il programma di aggiornamento mi sostituira'
+                    log.info("aggiornamento in corso: chiudo RemoteDesk")
+                    self.exit()
+                    os._exit(0)
                 self.ensure_agent()
                 st = api(self.port, "/api/public")
                 if st and self.icon:

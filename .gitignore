@@ -12,3 +12,7 @@ local.token
 machine.key
 config.json*
 audit.jsonl
+
+# chiave privata di rilascio: MAI nella repository
+*.key
+release-key/

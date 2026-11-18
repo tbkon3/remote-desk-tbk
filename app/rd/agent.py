@@ -17,6 +17,7 @@ from aiortc import (RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessio
 from . import auth
 from .audio import SystemAudioTrack
 from .audit import Audit
+from .update import Updater
 from .common import WIN, current_user, fmt_id
 from .files import FileServer
 from .network import Network, net_id
@@ -273,12 +274,12 @@ class Session:
             self.send({"t": "notice", "text": "Input dell'utente remoto " + ("BLOCCATO" if v else "sbloccato") +
                        ("" if self.agent.service_mode else " (richiede modalita' servizio)")})
 
-    async def close(self, notify=True):
+    async def close(self, notify=True, reason=None):
         if self.agent.sessions.get(self.sid) is not self:
             return
         self.agent.sessions.pop(self.sid, None)
         if notify:
-            self.send({"t": "bye"})
+            self.send({"t": "bye", "reason": reason} if reason else {"t": "bye"})
         self.agent.injector().release_all()
         if self.agent.block_owner == self.sid or not any(s.perms()["control"] for s in self.agent.sessions.values()):
             self.agent.block_owner = None
@@ -326,6 +327,9 @@ class Agent:
         self.block_owner = None
         self.seen_sids = {}        # anti-replay delle offerte, comune a tutte le reti
         self.outgoing = {}         # (rete, macchina) -> ultimo segnale da una finestra di sessione aperta qui
+        self.updater = Updater(self)
+        self.updating = False
+        self.port = 0
         self.chat = []             # messaggi chat (in memoria)
         self.chat_seq = 0
         self.chat_seen = 0         # ultimo segnale di vita della finestra chat locale
@@ -725,10 +729,10 @@ class Agent:
         return {"type": "auditrep", "to": m["frm"], "rid": body["rid"], "box": box,
                 "msig": auth.sign(self.mkey, {"rid": body["rid"], "frm": self.cfg["id"], "c": box["c"]})}
 
-    async def close_sessions(self, sid=None):
+    async def close_sessions(self, sid=None, reason=None):
         for s in list(self.sessions.values()):
             if sid is None or s.sid == sid:
-                await s.close()
+                await s.close(reason=reason)
 
     # ------------------------------------------------------------------ cicli di servizio
     async def cursor_watch(self):
@@ -823,7 +827,8 @@ class Agent:
                 return
 
     async def shutdown(self):
-        await self.close_sessions()
+        # con "update" le finestre di sessione non si chiudono: continuano a riprovare finche' torno
+        await self.close_sessions(reason="update" if self.updating else None)
         for n in list(self.nets.values()):
             t = n.task
             n.stop()

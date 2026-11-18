@@ -1,4 +1,4 @@
-﻿REMOTEDESK 2.2.2 - accesso remoto tra le tue macchine, senza server propri
+﻿REMOTEDESK 2.3 - accesso remoto tra le tue macchine, senza server propri
 =========================================================================
 
 CONTENUTO
@@ -117,6 +117,14 @@ LIMITI
   - Se due reti molto chiuse non riescono a collegarsi direttamente, configura un
     server TURN in Impostazioni > Rete.
   - L'exe non e' firmato: Windows SmartScreen puo' chiedere "Esegui comunque".
+
+AGGIORNAMENTI
+  Dalla 2.3 RemoteDesk controlla da solo le nuove versioni: la console mostra
+  "Aggiorna questo PC" e, sulle macchine remote vecchie, "Aggiorna". Si puo'
+  aggiornare anche un PC a cui si e' collegati: la sessione si ricollega da sola.
+  Si aggiorna anche il servizio. Vengono installati solo pacchetti firmati; se la
+  nuova versione non parte si torna da soli alla precedente.
+  Impostazioni > Aggiornamenti: "Controlla ora" e installazione automatica.
 
 RIMOZIONE
   Icona > "Rimuovi servizio...", togli la spunta all'avvio automatico, chiudi

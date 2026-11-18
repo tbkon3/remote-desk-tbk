@@ -1,5 +1,14 @@
 # Novita'
 
+## 2.3.0
+- Aggiornamenti automatici: RemoteDesk controlla ogni 6 ore se c'e' una nuova versione e la console mostra
+  "Aggiorna questo PC". Le macchine della rete con una versione vecchia hanno il pulsante "Aggiorna" e si possono
+  aggiornare a distanza, anche mentre si e' collegati: la sessione si ricollega da sola dopo il riavvio.
+- Si aggiorna anche la modalita' servizio (Program Files), con riavvio del servizio e dell'icona dell'utente.
+- Pacchetti firmati con la chiave di rilascio (Ed25519) e verificati con impronta SHA-256; se la nuova versione
+  non parte si torna automaticamente alla precedente.
+- Opzione "installa automaticamente quando nessuno e' collegato" e indirizzo degli aggiornamenti configurabile.
+
 ## 2.2.2
 - Pulsante **Aggiorna** nella lista macchine: chiede a tutte le macchine accese di ripresentarsi subito.
 - Una macchina con cui hai una sessione aperta risulta sempre online, con il bollino **collegato**; anche ogni

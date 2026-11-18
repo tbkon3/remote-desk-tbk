@@ -91,6 +91,7 @@ dialog textarea{width:100%;min-height:120px}
     <option value="block0">Sblocca mouse/tastiera dell'utente</option>
     <option value="reboot">Riavvia il PC</option>
     <option value="shutdown">Spegni il PC</option>
+    <option value="update">Aggiorna RemoteDesk su questo PC</option>
   </select>
   <label class="chk" title="Sincronizza gli appunti (testo) tra i due PC" style="display:flex;gap:4px;align-items:center;font-size:13px"><input type="checkbox" id="clip" checked> Appunti</label>
   <button id="bFiles">File</button>
@@ -290,6 +291,9 @@ function onCtl(m){
     applyCursor();
   } else if (m.t === 'notice') {
     toast(m.text, 6000);
+  } else if (m.t === 'bye' && m.reason === 'update') {
+    overlay('Il PC remoto si sta aggiornando', 'Mi ricollego da solo appena torna disponibile...', true);
+    everConnected = true; setTimeout(() => { if (pc) pc.close(); retryTimer = setTimeout(connect, 8000) }, 300);
   } else if (m.t === 'bye') {
     userClosed = true; if (pc) pc.close(); setDot('bad');
     overlay('Sessione chiusa dal PC remoto', '', true);
@@ -423,7 +427,10 @@ $('acts').onchange = () => {
   const v = $('acts').value; $('acts').value = '';
   const ask = {reboot:'Riavviare il PC remoto?', shutdown:'Spegnere il PC remoto? Non potrai riaccenderlo da qui.'}[v];
   if (ask && !confirm(ask)) return;
-  if (v === 'block1' || v === 'block0') send({t:'action', a:'block', v:v === 'block1'});
+  if (v === 'update') {
+    if (!confirm('Aggiornare RemoteDesk sul PC remoto all\'ultima versione? Si riavvia e questa finestra si ricollega da sola.')) return;
+    post('/api/machines/update', {nid:NET, id:TARGET}).then(r => toast(r.error || 'Aggiornamento avviato sul PC remoto', 6000));
+  } else if (v === 'block1' || v === 'block0') send({t:'action', a:'block', v:v === 'block1'});
   else if (v) send({t:'action', a:v});
   stage.focus();
 };

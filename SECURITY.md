@@ -27,6 +27,7 @@
 | Servizio Windows | eseguito da `C:\Program Files\RemoteDesk`; dati in `C:\ProgramData\RemoteDesk\data` con ACL SYSTEM + Amministratori; file manager con impersonazione dell'utente collegato |
 | Registro accessi | per rete; richieste firmate dall'admin, risposte cifrate (X25519 + HKDF + AES-GCM) per la sola console richiedente e firmate dalla macchina |
 | Trasporto | WebRTC DTLS-SRTP / SCTP su DTLS |
+| Aggiornamenti | manifesto firmato con la chiave di rilascio Ed25519 (pubblica nel codice, privata solo al manutentore), zip verificato con SHA-256 e dimensione, scaricato in una cartella protetta (ProgramData per il servizio); installatore eseguito dalla copia nuova con ritorno automatico alla precedente; comando di aggiornamento remoto firmato da un admin della rete |
 
 ## Rischi residui
 - **Biforcazione del registro**: un amministratore *gia' revocato* che conosce la chiave di rete potrebbe proporre una
@@ -39,6 +40,8 @@
 - **Testo degli appunti nel registro**: vengono salvati i primi 300 caratteri, che possono contenere password copiate.
 - **Server di segnalazione pubblico**: vede orari e dimensioni dei messaggi (metadati), non il contenuto.
 - Il pacchetto non e' firmato digitalmente (Authenticode).
+- **Chiave di rilascio**: chi la possiede puo' distribuire aggiornamenti a tutti i PC (anche come SYSTEM). Va custodita
+  offline e mai pubblicata. L'aggiornamento automatico senza conferma e' disattivato per impostazione predefinita.
 
 ## Segnalare un problema
 Apri una issue senza includere chiavi di rete, file `machine.key`, `config.json`, `audit.jsonl` o log completi.
