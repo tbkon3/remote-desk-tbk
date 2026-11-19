@@ -83,6 +83,9 @@ def owned_registry(marker):
     create.argtypes = [wt.HANDLE, wt.LPCWSTR, wt.DWORD, wt.LPWSTR, wt.DWORD, wt.DWORD,
                        wt.LPVOID, ctypes.POINTER(wt.HANDLE), ctypes.POINTER(wt.DWORD)]
     create.restype = wt.LONG
+    close = adv.RegCloseKey
+    close.argtypes = [wt.HANDLE]
+    close.restype = wt.LONG
     handle, disposition = wt.HANDLE(), wt.DWORD()
     key_name = r"SOFTWARE\RemoteDesk"
     # HKEY_LOCAL_MACHINE is a sign-extended predefined handle on 64-bit Windows.
@@ -111,14 +114,18 @@ def owned_registry(marker):
                             and winreg.QueryInfoKey(key)[0] == 0, "Cleanup registro rifiutato")
             winreg.DeleteKeyEx(winreg.HKEY_LOCAL_MACHINE, key_name, winreg.KEY_WOW64_64KEY)
     finally:
-        winreg.CloseKey(key)
+        # RegDeleteKeyEx marks an open key for deletion. Release the handle created by
+        # RegCreateKeyExW with its matching API after the ownership check and deletion.
+        result = close(handle)
+        if result:
+            raise ctypes.WinError(result)
 
 
 def preflight(new, data, installed, temp, before):
     # Before repair use the published candidate's own data validator. After staging call
     # its complete service preflight and task-definition migration, never the updater main.
-    script = """
-import sys, traceback
+    script = r"""
+import os, subprocess, sys, traceback
 from pathlib import Path
 from types import SimpleNamespace
 root, target, data, trace = map(Path, sys.argv[1:5])
@@ -130,7 +137,36 @@ try:
             common.secure_dir(str(data), existing=True)
         except PermissionError as exc:
             msg = str(exc)
-            if not all(piece in msg for piece in ("parent mutable", "S-1-5-32-545", "00000116")):
+            direct = "RDACL app parent; parent mutable; S-1-5-32-545; 00000116"
+            ancestor = "RDACL system parent; ancestor replacement; S-1-5-32-545; 00000116"
+            if ancestor in msg:
+                # Some runner images also inherit this precise ACE on ProgramData/Microsoft.
+                # Prove both the missing stable ancestor and the candidate's own direct
+                # rejection of the RemoteDesk parent before accepting that earlier failure.
+                checks = r'''
+$ErrorActionPreference='Stop'
+$trusted=@('S-1-5-18','S-1-5-32-544')
+$owners=$trusted + 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+$parent=$env:RD_SMOKE_PARENT
+$common=[IO.Path]::GetDirectoryName($parent)
+$ms=Get-Acl -LiteralPath ([IO.Path]::Combine($common,'Microsoft'))
+$raw=[Security.AccessControl.RawSecurityDescriptor]::new($ms.GetSecurityDescriptorBinaryForm(),0)
+$matches=@($raw.DiscretionaryAcl | Where-Object {
+    $_.AceType -eq 'AccessAllowed' -and $_.SecurityIdentifier.Value -eq 'S-1-5-32-545' -and
+    $_.AccessMask -eq 0x116 -and ([int]$_.AceFlags -band 24) -eq 16
+})
+if (!$matches.Count -or (Test-NonemptyNtfsDataRoot $common $owners)) { throw 'Ancestor failure not corroborated' }
+try { Inspect-DataParent $parent; throw 'Expected rejection' }
+catch {
+    if ($_.Exception.Message -ne 'parent mutable' -or $script:aclSid -ne 'S-1-5-32-545' -or
+        $script:aclMask -ne '00000116') { throw }
+}
+'''
+                cmd = common.WINDOWS_ANCESTOR_POLICY + common.WINDOWS_PRIVATE_DIRECTORY_POLICY + checks
+                shell = updater.system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
+                subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", cmd], check=True, timeout=45,
+                               env=dict(os.environ, RD_SMOKE_PARENT=str(data.parent)))
+            elif direct not in msg:
                 raise
         else:
             raise AssertionError("2.4.0 ha accettato il descrittore storico")

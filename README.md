@@ -37,13 +37,13 @@ L'aggiornamento integrato richiede un manifesto di release valido e firmato dal 
 
 Il messaggio **Installazione di RemoteDesk 2.4.0** compare dopo la verifica e l'estrazione dello ZIP. Apri una nuova console dall'icona di RemoteDesk per controllare la versione dell'agente. Il servizio registrato usa la copia in `%ProgramFiles%\RemoteDesk` anche se apri l'icona da una cartella portabile.
 
-Alcune installazioni della 2.3.2 hanno ereditato da Windows un permesso di scrittura sulla cartella `%ProgramData%\RemoteDesk`. L'updater 2.4.0 interrompe la migrazione quando trova questo permesso. Sul PC interessato, durante una finestra di manutenzione, un amministratore Windows può verificare questo caso con [Ripara-permessi-servizio.ps1](tools/Ripara-permessi-servizio.ps1). Dalla cartella dello script, in Windows PowerShell a 64 bit aperta come amministratore, esegui prima la verifica in sola lettura:
+Alcune installazioni della 2.3.2 hanno ereditato da Windows un permesso di scrittura sulla cartella `%ProgramData%\RemoteDesk`. L'updater 2.4.0 interrompe la migrazione quando trova questo permesso. Sul PC interessato, durante una finestra di manutenzione, un amministratore Windows può verificare questo caso con [Ripara-permessi-servizio.ps1](tools/Ripara-permessi-servizio.ps1). Apri Windows PowerShell a 64 bit come amministratore nella cartella dello script ed esegui prima la verifica in sola lettura.
 
 ```powershell
-.\Ripara-permessi-servizio.ps1
+powershell.exe -NoProfile -File .\Ripara-permessi-servizio.ps1
 ```
 
-Se il risultato indica che la correzione è applicabile, esegui `.\Ripara-permessi-servizio.ps1 -Apply`. Dopo la conferma, riapri la console della 2.3.2, premi **Controlla ora** e poi **Macchine → Aggiorna questo PC**. Se la verifica segnala una configurazione diversa, conserva il messaggio per la diagnosi.
+Con l'esito `REPAIRABLE`, esegui `powershell.exe -NoProfile -File .\Ripara-permessi-servizio.ps1 -Apply`. Dopo `REPAIRED`, riapri la console della 2.3.2, premi **Controlla ora** e poi **Macchine → Aggiorna questo PC**. L'esito `SAFE` indica che il permesso della cartella è già conforme. Se compare `DA VERIFICARE`, conserva il messaggio per la diagnosi.
 
 ## Uso e permessi
 

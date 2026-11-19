@@ -93,18 +93,26 @@ namespace RemoteDeskRepair {
         private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint size, uint flags);
         public static SafeFileHandle PinDirectory(string p, bool apply) {
             // No FILE_SHARE_DELETE. L'identita' di questa directory resta fissata durante la verifica.
-            var h = CreateFileW(p,apply ? 0x02000000u : 0x80u,3,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
+            var h = CreateFileW(p,apply ? 0x02000000u : 0x81u,3,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
             try {
-                FileInfoNative info;
-                if (h.IsInvalid || !GetFileInformationByHandle(h,out info)) throw new Win32Exception();
-                if ((info.Attr & 0x410)!=0x10) throw new IOException("Directory reindirizzata.");
-                var resolved = new StringBuilder(32768);
-                uint size = GetFinalPathNameByHandleW(h,resolved,(uint)resolved.Capacity,0);
-                if (size==0 || size>=resolved.Capacity) throw new Win32Exception();
-                if (!String.Equals(resolved.ToString(),@"\\?\"+Path.GetFullPath(p),StringComparison.OrdinalIgnoreCase))
-                    throw new IOException("La directory non corrisponde al percorso locale verificato.");
+                VerifyDirectory(h,p);
                 return h;
             } catch { h.Dispose(); throw; }
+        }
+        public static void VerifyDirectory(SafeFileHandle h,string p) {
+            FileInfoNative info,current;
+            if (h.IsInvalid || !GetFileInformationByHandle(h,out info)) throw new Win32Exception();
+            if ((info.Attr & 0x410)!=0x10) throw new IOException("Directory reindirizzata.");
+            var resolved = new StringBuilder(32768);
+            uint size = GetFinalPathNameByHandleW(h,resolved,(uint)resolved.Capacity,0);
+            if (size==0 || size>=resolved.Capacity) throw new Win32Exception();
+            if (!String.Equals(resolved.ToString(),@"\\?\"+Path.GetFullPath(p),StringComparison.OrdinalIgnoreCase))
+                throw new IOException("Directory diversa dal percorso locale verificato.");
+            using (var check=CreateFileW(p,0x80,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero)) {
+                if (check.IsInvalid || !GetFileInformationByHandle(check,out current)) throw new Win32Exception();
+                if ((current.Attr & 0x410)!=0x10 || current.Volume!=info.Volume || current.IndexHigh!=info.IndexHigh ||
+                    current.IndexLow!=info.IndexLow) throw new IOException("Identita NTFS della directory cambiata.");
+            }
         }
         [DllImport("advapi32.dll", SetLastError=true)]
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
@@ -289,6 +297,8 @@ function Get-VerifiedRepairState($paths,[switch]$ForApply) {
     if ([IO.FileInfo]::new($source).Length -gt 262144 -or
         [IO.File]::ReadAllText($source) -notmatch '(?m)^VERSION = "2\.3\.2"\r?$') { throw 'Installazione diversa dalla 2.3.2.' }
     Assert-RdService $paths
+    [RemoteDeskRepair.Native]::VerifyDirectory($parentHandle,$paths.Parent)
+    [RemoteDeskRepair.Native]::VerifyDirectory($pins[2],$paths.Data)
     return [pscustomobject]@{Plan=$plan;Descriptor=$parent;Pins=$pins;ParentHandle=$parentHandle}
     } catch {
         foreach ($handle in $pins) { $handle.Dispose() }
@@ -306,7 +316,15 @@ function Set-ParentDacl($paths,[Security.AccessControl.RawSecurityDescriptor]$or
     $changed.GetBinaryForm($bytes,0)
     [RemoteDeskRepair.Native]::ProtectParent($parentHandle,$bytes)
     $actual = Get-RdDescriptor $paths.Parent
-    if ($actual.GetSddlForm($sections) -cne $changed.GetSddlForm($sections)) { throw 'DACL finale inattesa: verifica amministrativa richiesta.' }
+    $beforeBytes = New-Object byte[] $changed.DiscretionaryAcl.BinaryLength
+    $afterBytes = New-Object byte[] $actual.DiscretionaryAcl.BinaryLength
+    $changed.DiscretionaryAcl.GetBinaryForm($beforeBytes,0)
+    $actual.DiscretionaryAcl.GetBinaryForm($afterBytes,0)
+    if (!($actual.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -or
+        $actual.Owner.Value -ne $changed.Owner.Value -or $actual.Group.Value -ne $changed.Group.Value -or
+        [Convert]::ToBase64String($beforeBytes) -cne [Convert]::ToBase64String($afterBytes)) {
+        throw 'DACL finale inattesa: verifica amministrativa richiesta.'
+    }
     Assert-RdOnlyData $paths
 }
 

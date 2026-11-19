@@ -136,21 +136,28 @@ foreach ($sddl in $invalid) {
         self.run_repair_fixture(r"""
 $script:paths = [pscustomobject]@{Parent='C:\Synthetic\ProgramData\RemoteDesk'}
 $script:approved = Descriptor ('O:BAG:SYD:AI' + $required + $legacy + $readable)
+$script:handle = [pscustomobject]@{}
+$script:handle | Add-Member ScriptMethod Dispose { $script:releases++ }
 function Test-RepairContext {}
 function Initialize-RepairNative {}
 function Get-RepairPaths { return $script:paths }
-function Get-VerifiedRepairState($target) {
+function Get-VerifiedRepairState($target,[switch]$ForApply) {
     if ($target -ne $script:paths) { throw 'wrong paths' }
+    if ([bool]$ForApply -ne $script:mayWrite) { throw 'unexpected access requested' }
     $script:checks++
     if ($script:state -eq 'Rejected') { throw 'resources not trusted' }
-    return [pscustomobject]@{Plan=$script:state;Descriptor=$script:approved}
+    if ($script:state -eq 'Safe') { return [pscustomobject]@{Plan='Safe';Descriptor=$script:approved} }
+    return [pscustomobject]@{Plan='Legacy';Descriptor=$script:approved;ParentHandle=$script:handle;Pins=@($script:handle)}
 }
-function Set-ParentDacl($target,$descriptor) {
-    if ($target -ne $script:paths -or $descriptor -ne $script:approved) { throw 'wrong target or descriptor' }
+function Set-ParentDacl($target,$descriptor,$handle) {
+    if ($target -ne $script:paths -or $descriptor -ne $script:approved -or $handle -ne $script:handle) {
+        throw 'wrong target, descriptor or handle'
+    }
     $script:writes++
 }
 foreach ($case in 'audit','apply','safe','rejected') {
-    $script:checks = $script:writes = 0
+    $script:checks = $script:writes = $script:releases = 0
+    $script:mayWrite = $case -ne 'audit'
     $script:state = switch ($case) {'safe' {'Safe'}; 'rejected' {'Rejected'}; default {'Legacy'}}
     $rejected = $false
     try {
@@ -158,7 +165,8 @@ foreach ($case in 'audit','apply','safe','rejected') {
     } catch { if ($_.Exception.Message -ne 'resources not trusted') { throw }; $rejected = $true }
     $pattern = switch ($case) {'audit' {'^REPAIRABLE'}; 'apply' {'^REPAIRED'}; 'safe' {'^SAFE'}}
     if (($case -ne 'rejected' -and $outcome -notmatch $pattern) -or $rejected -ne ($case -eq 'rejected') -or
-        $script:checks -ne 1 -or $script:writes -ne [int]($case -eq 'apply')) { throw "unexpected actions: $case" }
+        $script:checks -ne 1 -or $script:writes -ne [int]($case -eq 'apply') -or
+        $script:releases -ne [int]($case -in 'audit','apply')) { throw "unexpected actions: $case" }
 }
 """)
 
