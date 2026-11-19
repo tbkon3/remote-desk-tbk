@@ -601,12 +601,45 @@ def _identity(root, name):
     return _item_id(root / name, folder=name in ("runtime", "app"))
 
 
+def _rename_verified_windows(origin, dest, name, expected):
+    from ctypes import wintypes
+    scope = _file_scope()
+    handle = scope._k32.CreateFileW(str(origin / name), 0x10080, 3, None, 3, 0x02200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # This no-follow handle denies deletion/rename until we have compared
+        # IDs and renamed the exact opened object. Parent directories are pinned.
+        if _identity(origin, name) != expected:
+            raise PermissionError(f"Identità del componente {name} cambiata")
+        class RenameInfo(ctypes.Structure):
+            _fields_ = [("flags", wintypes.DWORD), ("directory", wintypes.HANDLE),
+                        ("length", wintypes.DWORD), ("filename", wintypes.WCHAR * 1)]
+        path = str(dest / name).encode("utf-16-le")
+        size = max(ctypes.sizeof(RenameInfo), RenameInfo.filename.offset + len(path) + 2)
+        buffer = ctypes.create_string_buffer(size)
+        info = RenameInfo.from_buffer(buffer)
+        info.length = len(path)
+        ctypes.memmove(ctypes.addressof(buffer) + RenameInfo.filename.offset, path, len(path))
+        move = scope._k32.SetFileInformationByHandle
+        move.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+        if not move(handle, 3, buffer, size):  # FileRenameInfo, ReplaceIfExists = false
+            raise ctypes.WinError(ctypes.get_last_error())
+        if _identity(dest, name) != expected:
+            raise PermissionError(f"Identità del componente {name} non confermata")
+    finally:
+        scope._k32.CloseHandle(handle)
+
+
 def _move_member(origin, dest, name, expected):
     for attempt in range(12):
         if expected is None or _identity(origin, name) != expected or os.path.lexists(dest / name):
             raise PermissionError(f"Il componente {name} è cambiato durante l'aggiornamento")
         try:
-            os.rename(origin / name, dest / name)
+            if os.name == "nt":
+                _rename_verified_windows(origin, dest, name, expected)
+            else:
+                os.rename(origin / name, dest / name)
             return
         except OSError as exc:
             if attempt == 11 or getattr(exc, "winerror", None) not in (32, 33):

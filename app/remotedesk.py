@@ -217,17 +217,25 @@ class App:
             if self.agent:
                 self.agent.stop(timeout=4)
         finally:
-            logging.shutdown()
-            os._exit(0)
+            try:
+                if self.instance:
+                    self.instance.withdraw()
+                logging.shutdown()
+            finally:
+                os._exit(0)
 
     def watchdog(self):
         while not self.quit.is_set():
             try:
                 if self.agent and self.agent.updating:   # il programma di aggiornamento mi sostituira'
                     log.info("aggiornamento in corso: chiudo RemoteDesk")
-                    if self.icon:
-                        self.icon.stop()
-                    os._exit(0)
+                    try:
+                        if self.icon:
+                            self.icon.stop()
+                        if self.instance:
+                            self.instance.withdraw()
+                    finally:
+                        os._exit(0)
                 self.ensure_agent()
                 st = api(self.port, "/api/public", data_dir=self.data_dir, owner_only=self.owner_only)
                 if st and self.icon:
@@ -309,7 +317,8 @@ def run_portable(args, root):
                         open_console(port, data_dir=data_dir, owner_only=True)
                     return
                 time.sleep(0.25)
-            raise RuntimeError("Il profilo è in uso ma la console della copia portabile non è ancora verificabile.")
+            raise RuntimeError("Questa copia o questo profilo sono già in uso. La console per il profilo richiesto "
+                               f"non è verificabile. Chiudere l'altra istanza di {root} prima di riprovare.")
         instance.reserve(args.port)
         args.port = instance.port
         setup_logging(data_dir, "portable", args.verbose)
@@ -349,17 +358,17 @@ def main():
             if (os.path.normcase(os.path.realpath(sys.executable)) != os.path.normcase(os.path.realpath(trusted))
                     or not running_as_system()):
                 raise PermissionError("Il servizio richiede il runtime di installazione e l'identità SYSTEM.")
-        if not privileged and is_bundle(ROOT_DIR):
+        if not privileged:
             try:
-                run_portable(args, ROOT_DIR)
+                if is_bundle(ROOT_DIR):
+                    run_portable(args, ROOT_DIR)
+                    return
             except (OSError, ValueError, RuntimeError) as exc:
                 if args.agent_only or args.no_browser or args.minimized:
                     raise
                 W.message_box(str(exc), "RemoteDesk portabile")
                 raise SystemExit(1) from exc
-            return
-        if not privileged and canonical:
-            args.data = installed_profile(args.data)
+            args.data = installed_profile(args.data, standalone=args.agent_only)
     args.port = args.port if args.port is not None else DEFAULT_PORT
     data_dir = pick_data_dir(args.data, service=privileged)
     mode = ("service" if args.service else "session-agent" if args.session_agent else

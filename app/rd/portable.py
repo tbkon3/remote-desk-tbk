@@ -23,10 +23,14 @@ def default_profile():
 
 def is_bundle(root):
     base = Path(root)
-    if _canonical(base) == _canonical(INSTALL_DIR) or not (base / "RemoteDesk.exe").is_file():
+    if _canonical(base) == _canonical(INSTALL_DIR):
         return False
-    if not (base / "runtime" / "pythonw.exe").is_file() or not (base / "app" / "remotedesk.py").is_file():
-        raise RuntimeError("Copia portabile incompleta. Estrarre tutti i file dello ZIP nella stessa cartella.")
+    launcher = base / "RemoteDesk.exe"
+    runtime = base / "runtime"
+    if not os.path.lexists(launcher) and not os.path.lexists(runtime):
+        return False
+    if not launcher.is_file() or not (runtime / "pythonw.exe").is_file() or not (base / "app" / "remotedesk.py").is_file():
+        raise RuntimeError("Copia portabile incompleta. Ripristinare RemoteDesk.exe e tutti i file dello ZIP.")
     return True
 
 
@@ -112,13 +116,16 @@ def _has_legacy_identity(folder):
     return False
 
 
-def installed_profile(override):
+def installed_profile(override, *, standalone=False):
     """Keep an installed user-mode tray from starting a second agent with a claimed identity."""
     base = default_profile().parent
     legacy = base.parent / "data"
     data = Path(override) if override else legacy
     if override and _overlaps(data, Path(PROGRAM_DATA).parent):
         raise PermissionError("Il profilo del servizio è riservato al servizio Windows.")
+    if standalone and _canonical(data) == _canonical(legacy) and (_service_may_own_legacy() or not _legacy_inactive()):
+        raise PermissionError("Il profilo storico può essere già usato dal servizio o dall'agente precedente. "
+                              "Per avviare un agente indipendente, indicare una cartella dati dedicata con --data.")
     if not (data / "portable.lock").is_file():
         return override
     if override:
@@ -162,6 +169,30 @@ def _lock(stack, path):
         raise
     stack.callback(f.close)
     return True
+
+
+def _guard_legacy_writer(stack, profile):
+    # 2.3.2 and 2.4.0 open this exact log for writing before loading any user
+    # identity, including in --agent-only with a custom port. Deny concurrent
+    # access from such a writer for as long as we use its historical profile.
+    if os.name != "nt":
+        return
+    import ctypes as ct
+    from .local_access_win import DWORD, PTR, _fn
+    logs = profile / "logs"
+    private_dir(logs, files=("app.log",))
+    kernel = ct.WinDLL("kernel32", winmode=0x800, use_last_error=True)
+    create = _fn(kernel, "CreateFileW", PTR, ct.c_wchar_p, DWORD, DWORD, PTR, DWORD, DWORD, PTR)
+    close = _fn(kernel, "CloseHandle", ct.c_int, PTR)
+    # FILE_READ_DATA | FILE_READ_ATTRIBUTES (participate in share checks),
+    # FILE_SHARE_READ / OPEN_ALWAYS / OPEN_REPARSE_POINT.
+    handle = create(str(logs / "app.log"), 0x81, 1, None, 4, 0x00200000, None)
+    if handle == PTR(-1).value:
+        error = ct.get_last_error()
+        if error == 32:
+            raise RuntimeError("Il profilo storico è in uso. Chiudere l'agente RemoteDesk precedente.")
+        raise ct.WinError(error)
+    stack.callback(close, handle)
 
 
 def _listener(port):
@@ -208,9 +239,13 @@ class Instance:
             if _canonical(self.profile) == _canonical(self.legacy) and self.registered:
                 raise PermissionError("Il profilo storico può appartenere al servizio. Usare il profilo portabile.")
             return
+        migrated = _read(self.base / "legacy.json").get("data") == _canonical(self.legacy)
+        if self.registered and migrated:
+            raise PermissionError("Il profilo portabile precedente può essere condiviso con il servizio Windows. "
+                                  "Verificare le identità prima del ripristino. Per un'identità separata, "
+                                  "indicare una cartella diversa con --data.")
         if self.registered or any((self.profile / name).exists() for name in ("config.json", "config.json.bak", "machine.key")):
             return
-        migrated = _read(self.base / "legacy.json").get("data") == _canonical(self.legacy)
         if migrated:
             if not self.legacy.is_dir():
                 raise RuntimeError("Profilo portabile precedente non disponibile. Verificare il percorso e il backup.")
@@ -248,13 +283,18 @@ class Instance:
             lockdir = self.base / "locks"
             root_hash = hashlib.sha256(self.root.encode("utf8")).hexdigest()
             private_dir(lockdir, files=(root_hash + ".lock",))
-            root_lock = _lock(self.stack, lockdir / (root_hash + ".lock"))
-            profile_lock = _lock(self.stack, self.profile / "portable.lock")
-            self.owner = root_lock and profile_lock
-            if not self.owner and profile_lock:
-                raise RuntimeError("Questa copia di RemoteDesk è già aperta con un altro profilo.")
-            if self.owner:
-                self.state_path.unlink(missing_ok=True)
+            if not _lock(self.stack, lockdir / (root_hash + ".lock")):
+                return self
+            if not _lock(self.stack, self.profile / "portable.lock"):
+                self.stack.close()
+                return self
+            self.owner = True
+            if _canonical(self.profile) == _canonical(self.legacy):
+                if not _legacy_inactive():
+                    raise RuntimeError(f"La porta storica {DEFAULT_PORT} è occupata. Chiudere l'agente precedente "
+                                       "prima di utilizzare nuovamente il suo profilo.")
+            _guard_legacy_writer(self.stack, self.profile)
+            self.state_path.unlink(missing_ok=True)
             return self
         except BaseException:
             self.stack.close()

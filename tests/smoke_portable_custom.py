@@ -182,6 +182,26 @@ def member_hashes(root):
     return result
 
 
+def file_id(path):
+    info = path.stat()
+    require(info.st_ino != 0, "NTFS file identity unavailable")
+    return info.st_dev, info.st_ino
+
+
+def check_previous(target, previous, old_ids, source, installed):
+    saved = set(MANAGED)
+    if source["RemoteDesk.exe"] == installed["RemoteDesk.exe"]:
+        # The updater keeps an identical native launcher in place across the swap.
+        require(file_id(target / "RemoteDesk.exe") == old_ids["RemoteDesk.exe"], "Unchanged launcher was replaced")
+        saved.remove("RemoteDesk.exe")
+    require({p.name for p in previous.iterdir()} == saved, "Unexpected contents in previous package")
+    for name in saved:
+        require(file_id(previous / name) == old_ids[name] and file_id(target / name) != old_ids[name],
+                "Previous or installed file identity is incorrect for " + name)
+    expected = {key: value for key, value in source.items() if key.split("/", 1)[0] in saved}
+    require(member_hashes(previous) == expected, "Contents of the previous components changed")
+
+
 def until(active, read, label, timeout=45):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -314,6 +334,7 @@ def upgrade(work, target, data, staged, env, version, original_version):
             quit_fixture(data, port)
     key = support.digest(data / "machine.key")
     source = member_hashes(target)
+    old_ids = {name: file_id(target / name) for name in MANAGED}
     personal = {target / "customer notes.txt": secrets.token_bytes(40),
                 target / "data/client estate.bin": secrets.token_bytes(64)}
     for path, content in personal.items():
@@ -346,7 +367,8 @@ def upgrade(work, target, data, staged, env, version, original_version):
             require(support.digest(data / "machine.key") == key, "Device private key changed")
             require(member_hashes(target) == expected, "Active package differs from candidate")
             backups = list((target / ".remotedesk-update").glob("*/previous"))
-            require(len(backups) == 1 and member_hashes(backups[0]) == source, "Original package backup incomplete")
+            require(len(backups) == 1, "Cannot identify the previous package")
+            check_previous(target, backups[0], old_ids, source, expected)
             require(all(p.read_bytes() == content and p.stat().st_ino == before[p] for p, content in personal.items()),
                     "Portable update rewrote or lost a personal file")
             require(not any((data / n).exists() for n in (".update-pending.json", ".update-ready.json")),

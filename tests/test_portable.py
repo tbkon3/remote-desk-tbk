@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -54,9 +55,9 @@ class PortableIdentity(unittest.TestCase):
                 self.assertFalse(other.owner)
                 with self.assertRaisesRegex(RuntimeError, "aperto da"):
                     other.existing_port()
-            with self.assertRaisesRegex(RuntimeError, "altro profilo"):
-                with portable.Instance(self.root, self.tmp / "other-data"):
-                    pass
+            with portable.Instance(self.root, self.tmp / "other-data") as other_profile:
+                self.assertFalse(other_profile.owner)
+                self.assertIsNone(other_profile.existing_port())
             self.actor.return_value = "user/logon-B"
             with portable.Instance(self.root) as other_logon:
                 with self.assertRaisesRegex(RuntimeError, "sessione Windows"):
@@ -82,6 +83,10 @@ class PortableIdentity(unittest.TestCase):
             self.assertEqual(fresh.profile, self.default)
         receipt = {"target": portable._canonical(self.root), "version": portable.VERSION, "nonce": "a"*64}
         (self.legacy / ".update-pending.json").write_text(json.dumps(receipt))
+        self.registered.return_value = True
+        with portable.Instance(self.root) as separate:
+            self.assertEqual(separate.profile, self.default)
+        self.registered.return_value = False
         with portable.Instance(self.root) as upgraded:
             self.assertEqual(upgraded.profile, self.legacy)
             upgraded.reserve(None)
@@ -89,8 +94,11 @@ class PortableIdentity(unittest.TestCase):
         with portable.Instance(self.tmp / "spostata") as moved:
             self.assertEqual(moved.profile, self.legacy)
         self.registered.return_value = True
-        with portable.Instance(self.root) as separate:
-            self.assertEqual(separate.profile, self.default)
+        with self.assertRaisesRegex(PermissionError, "profilo portabile precedente"):
+            with portable.Instance(self.root):
+                pass
+        with portable.Instance(self.root, self.tmp / "explicit") as separate:
+            self.assertEqual(separate.profile, self.tmp / "explicit")
         self.assertFalse((self.default / "machine.key").exists())
 
     def test_legacy_autostart_requires_known_copy_and_inactive_agent(self):
@@ -118,6 +126,71 @@ class PortableIdentity(unittest.TestCase):
             first.reserve(None)
         with portable.Instance(self.root) as next_boot:
             self.assertEqual(next_boot.profile, self.legacy)
+
+    def test_busy_legacy_port_refuses_an_explicit_old_profile(self):
+        self.inactive.return_value = False
+        with self.assertRaisesRegex(RuntimeError, "occupata"), portable.Instance(self.root, self.legacy):
+            pass
+
+    @unittest.skipUnless(os.name == "nt", "Condivisione handle Windows")
+    def test_legacy_writer_on_custom_port_excluded_in_both_start_orders(self):
+        for folder in (self.legacy, self.tmp / "profilo-altro"):
+            with self.subTest(folder=folder):
+                log = folder / "logs" / "app.log"
+                log.parent.mkdir(parents=True)
+                with log.open("a") as old_agent:
+                    old_agent.write("existing")
+                    with self.assertRaisesRegex(RuntimeError, "in uso"), portable.Instance(self.root, folder):
+                        pass
+                with portable.Instance(self.root, folder):
+                    with self.assertRaises(PermissionError), log.open("a"):
+                        pass
+                with log.open("a") as old_agent:
+                    old_agent.write(" closed")
+                self.assertEqual(log.read_text(), "existing closed")
+
+    def test_follower_cannot_steal_second_lock_during_concurrent_start(self):
+        root_held, let_owner_continue = threading.Event(), threading.Event()
+        owner_ready, stop = threading.Event(), threading.Event()
+        errors = []
+        original = portable._lock
+
+        def interrupted_lock(stack, path):
+            acquired = original(stack, path)
+            if acquired and path.parent.name == "locks":
+                root_held.set()
+                if not let_owner_continue.wait(4):
+                    raise TimeoutError("first lock")
+            return acquired
+
+        def owner():
+            try:
+                with portable.Instance(self.root) as inst:
+                    self.assertTrue(inst.owner)
+                    self.mark_ready(inst)
+                    owner_ready.set()
+                    stop.wait(4)
+            except Exception as exc:
+                errors.append(exc)
+                owner_ready.set()
+
+        with patch.object(portable, "_lock", side_effect=interrupted_lock):
+            worker = threading.Thread(target=owner)
+            worker.start()
+            try:
+                self.assertTrue(root_held.wait(4))
+                with portable.Instance(self.root) as follower:
+                    self.assertFalse(follower.owner)
+                    self.assertIsNone(follower.existing_port())
+                    let_owner_continue.set()
+                    self.assertTrue(owner_ready.wait(4))
+                    self.assertEqual(errors, [])
+                    self.assertEqual(follower.existing_port(), 50101)
+            finally:
+                let_owner_continue.set()
+                stop.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
 
     def test_previous_profile_can_recover_from_backup_but_not_from_a_missing_key(self):
         self.legacy.mkdir(parents=True)
@@ -256,9 +329,29 @@ class PortableIdentity(unittest.TestCase):
             for flag in ("--service", "--session-agent", "--install-service", "--uninstall-service"):
                 with patch.object(sys, "argv", ["RemoteDesk.exe", flag]), self.assertRaises(PermissionError):
                     remotedesk.main()
+            launcher = self.root / "RemoteDesk.exe"
+            renamed = self.root / "Nome diverso.exe"
+            launcher.rename(renamed)
+            with patch.object(sys, "argv", [str(renamed), "--agent-only"]), self.assertRaisesRegex(RuntimeError, "incompleta"):
+                remotedesk.main()
+            renamed.rename(launcher)
             (self.root / "runtime/pythonw.exe").unlink()
             with patch.object(sys, "argv", ["RemoteDesk.exe", "--agent-only"]), self.assertRaisesRegex(RuntimeError, "incompleta"):
                 remotedesk.main()
+
+    def test_canonical_standalone_cannot_use_ambiguous_legacy_identity(self):
+        from rd import common
+        self.registered.return_value = True
+        with patch.object(remotedesk, "WIN", True), patch.object(common, "ROOT_DIR", str(self.installed)), \
+                patch.object(common, "INSTALL_DIR", str(self.installed)), \
+                patch.object(remotedesk, "pick_data_dir", side_effect=AssertionError("profilo condiviso")):
+            for options in ([], ["--data", str(self.legacy)]):
+                with patch.object(sys, "argv", ["RemoteDesk.exe", "--agent-only", "--port", "50001", *options]), \
+                        self.assertRaisesRegex(PermissionError, "profilo storico"):
+                    remotedesk.main()
+        self.assertIsNone(portable.installed_profile(None))
+        other = self.tmp / "custom-profile"
+        self.assertEqual(portable.installed_profile(other, standalone=True), other)
 
 
 _real_listener = portable._listener
