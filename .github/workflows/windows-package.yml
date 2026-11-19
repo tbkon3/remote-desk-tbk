@@ -149,3 +149,20 @@ jobs:
             jq -r .notes dist/latest.json > "$RUNNER_TEMP/rd-release-notes"
             gh release create v2.4.0 --target "$GITHUB_SHA" --title 'RemoteDesk 2.4.0' --notes-file "$RUNNER_TEMP/rd-release-notes" dist/RemoteDesk-2.4.0.zip dist/RemoteDesk-2.4.0.zip.sha256 dist/latest.json
           fi
+      - name: Download the public stable feed and compare its ZIP with the verified package
+        shell: bash
+        run: |
+          set -euo pipefail
+          feed='https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist'
+          published="$RUNNER_TEMP/rd-public.json"
+          for attempt in {1..15}; do
+            status=$(curl -sS --proto '=https' --max-time 15 -H 'Cache-Control: no-cache' -o "$published" -w '%{http_code}' "$feed/latest.json" || true)
+            if [[ "$status" == 200 ]] && cmp -s "$published" dist/latest.json; then break; fi
+            sleep 15
+          done
+          test "$status" = 200
+          cmp "$published" dist/latest.json
+          status=$(curl -fsS --proto '=https' --retry 3 --max-time 90 -o "$RUNNER_TEMP/rd-public.zip" -w '%{http_code}' "$feed/RemoteDesk-2.4.0.zip")
+          test "$status" = 200
+          cmp "$RUNNER_TEMP/rd-public.zip" dist/RemoteDesk-2.4.0.zip
+          echo 'The public stable feed and package both returned HTTP 200 without a redirect and match the release byte for byte.'
