@@ -17,6 +17,7 @@ import time
 import traceback
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 
 SCRIPT = Path(__file__).resolve()
@@ -29,6 +30,7 @@ OLD_HASH = "3e58471929b5e4144c47be617689c2cd5498b6008115e00f6bfb9d8fb803f976"
 OLD_SIZE = 53535321
 FEED = "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/latest.json"
 MANAGED = ("RemoteDesk.exe", "LEGGIMI.txt", "app", "runtime")
+CUSTOM_FOLDER = "Assistenza Città Blu"
 
 
 def host_guard():
@@ -240,20 +242,80 @@ def instance(data, target):
     return state["port"]
 
 
-async def browser_state(endpoint, port, target_root, name, version):
+def safe_page(url):
+    parsed = urlsplit(url)
+    if parsed.scheme == "about":
+        return "about:blank"
+    if parsed.scheme not in ("http", "https") or parsed.hostname != "127.0.0.1":
+        return parsed.scheme + ":<other>"
+    path = parsed.path if parsed.path in ("/", "/local/start", "/chat", "/manage", "/session") else "/<other>"
+    return f"{parsed.scheme}://127.0.0.1:{parsed.port}{path}"
+
+
+def fixture_log_flags(data):
+    path = data / "logs/portable.log"
+    detail = ""
+    if path.is_file():
+        with path.open("rb") as inp:
+            inp.seek(max(0, path.stat().st_size - 65536))
+            detail = inp.read(65536).decode("utf8", errors="ignore").lower()
+    return {tag: tag in detail for tag in ("agente pronto", "impossibile verificare", "error", "traceback")}
+
+
+def prepare_browser_adapter(work):
+    # The app discovers and launches this private EXE through its normal Windows
+    # browser lookup. Record the exact request atomically inside the private profile.
+    binary = work / "browser adapter/Microsoft/Edge/Application/msedge.exe"
+    binary.parent.mkdir(parents=True)
+    from rd.updater import system_tool
+    modules = Path(system_tool(r"WindowsPowerShell\v1.0\powershell.exe")).parent / "Modules"
+    support.powershell(r"""
+$code=@'
+using System;
+using System.IO;
+using System.Text;
+public static class BrowserRequest {
+    [STAThread] public static int Main(string[] args) {
+        string path = Environment.GetEnvironmentVariable("RD_SMOKE_BROWSER_CAPTURE");
+        if (String.IsNullOrEmpty(path)) return 2;
+        try {
+            File.WriteAllLines(path + ".new", args, new UTF8Encoding(false));
+            File.Move(path + ".new", path);
+            return 0;
+        } catch (IOException) { return 3; }
+    }
+}
+'@
+Add-Type -TypeDefinition $code -Language CSharp -OutputAssembly $env:RD_SMOKE_ADAPTER -OutputType WindowsApplication
+""", dict(os.environ, RD_SMOKE_ADAPTER=str(binary), PSMODULEPATH=str(modules)))
+    require(binary.is_file(), "Could not build private Windows browser adapter")
+
+
+def requested_console(capture, profile, port):
+    args = capture.read_text("utf8").splitlines()
+    capture.unlink()
+    urls = [v[len("--app="):] for v in args if v.startswith("--app=")]
+    profiles = [Path(v[len("--user-data-dir="):]).resolve() for v in args if v.startswith("--user-data-dir=")]
+    require(len(urls) == 1 and profiles == [profile / "browser"], "Portable app used an unexpected browser request/profile")
+    parsed = urlsplit(urls[0])
+    require(safe_page(urls[0]) == f"http://127.0.0.1:{port}/local/start" and not parsed.query and parsed.fragment
+            and parsed.username is None and parsed.password is None, "Wrong destination in the app's browser request")
+    return urls[0]
+
+
+async def browser_state(endpoint, url, port, target_root, name, version):
     import aiohttp
     async with aiohttp.ClientSession(trust_env=False) as client:
         deadline = time.monotonic() + 35
         while time.monotonic() < deadline:
             async with client.get(f"http://127.0.0.1:{endpoint}/json/list") as response:
                 targets = await response.json()
-            tab = next((item for item in targets if item["type"] == "page"
-                        and item["url"].startswith(f"http://127.0.0.1:{port}/")), None)
+            tab = next((item for item in targets if item["type"] == "page" and item["url"] == "about:blank"), None)
             if tab:
                 break
             await asyncio.sleep(.2)
         else:
-            raise RuntimeError("Normal EXE launch did not open the portable console in the expected user's browser")
+            raise RuntimeError("Headless browser has no blank target: " + repr([safe_page(t["url"]) for t in targets]))
         async with client.ws_connect(tab["webSocketDebuggerUrl"]) as ws:
             seq = 0
             async def command(method, params):
@@ -266,6 +328,8 @@ async def browser_state(endpoint, port, target_root, name, version):
                         require("error" not in result, "Headless browser rejected " + method)
                         return result["result"]
 
+            opened = await command("Page.navigate", {"url": url})
+            require(not opened.get("errorText"), "Browser rejected the app's origin/path: " + safe_page(url))
             # This offline device has no network login. The welcome view renders the
             # owner-only installed version and actual update destination for this copy.
             expression = """([location.port,document.querySelector('#meName')?.textContent,
@@ -281,7 +345,9 @@ async def browser_state(endpoint, port, target_root, name, version):
                         require(Path(path).resolve() == target_root, "Console displays the wrong update destination")
                         return
                 await asyncio.sleep(.2)
-            raise RuntimeError("Rendered console did not show the expected portable device, port and version")
+            async with client.get(f"http://127.0.0.1:{endpoint}/json/list") as response:
+                targets = await response.json()
+            raise RuntimeError("Incorrect rendered portable console. Origin/path: " + repr([safe_page(t["url"]) for t in targets]))
 
 
 @contextmanager
@@ -289,8 +355,7 @@ def console_browser(data, env):
     from rd import agent
     browser = agent.W.find_browser()
     require(browser and Path(browser).is_file(), "Edge or Chrome is required on the hosted runner")
-    # Prestart the actual browser's single-instance profile. The application's real
-    # --app invocation should open a new page there. The test never navigates any page.
+    # Render the URI issued by the unmodified application, using its own browser profile.
     profile = data / "browser"
     args = ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + str(profile), "--disable-sync",
             "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
@@ -305,7 +370,7 @@ def capture_old(target, staged, data, port, version, original_version):
     # Run the original command builder with its own runtime. Capture only the
     # process launch so the harness can contain its complete tree in a private Job.
     guard_worker(SCRIPT.parents[1])
-    require(target == SCRIPT.parents[1] / "Read only parent/Assistenza Filiale Blu"
+    require(target == SCRIPT.parents[1] / "Read only parent" / CUSTOM_FOLDER
             and staged.is_relative_to(data / "update"), "Legacy driver escaped its private directories")
     sys.path.insert(0, str(target / "app"))
     from rd import update
@@ -410,7 +475,7 @@ def worker(work, version):
     elif facts["signed_required"]:
         raise RuntimeError("Supplied candidate manifest describes a different version")
     env = isolated_environment(Path(common.known_folder(0x1c)).parents[1])
-    target = work / "Read only parent/Assistenza Filiale Blu"
+    target = work / "Read only parent" / CUSTOM_FOLDER
     try:
         with (target.parent / "write forbidden.tmp").open("xb"):
             pass
@@ -440,18 +505,29 @@ def worker(work, version):
         old_keys = tuple(support.digest(other_data / file) for file in ("machine.key", "local.token"))
         upgrade(work, target, data, staged, env, version, facts["from_version"])
 
-        # Suppress only the tray icon. The unmodified application itself must open the
-        # correct browser profile, issue its native ticket, authenticate and render its UI.
+        # Suppress only the tray. Observe the real browser request, then render the
+        # exact URI in the isolated browser. Headless Chromium ignores forwarded --app.
         from rd.portable_storage import private_dir
         for directory in (profile.parent.parent, profile.parent, profile):
             private_dir(directory)
         name = "Portable " + secrets.token_hex(6)
         device = configure(profile, name)
+        prepare_browser_adapter(work)
+        capture = profile / "ci-browser-request"
+        request_env = dict(env, RD_SMOKE_BROWSER_CAPTURE=str(capture))
+        request_env["PROGRAMFILES(X86)"] = str(work / "browser adapter")
         with console_browser(profile, env) as endpoint:
-            with private_launcher(target / "RemoteDesk.exe", ["--no-tray"], env) as portable_active:
+            with private_launcher(target / "RemoteDesk.exe", ["--no-tray"], request_env) as portable_active:
                 port = until(portable_active, lambda: instance(profile, target), "default portable instance")
                 public(profile, port, version, name, device)
-                asyncio.run(asyncio.wait_for(browser_state(endpoint, port, target, name, version), timeout=70))
+                try:
+                    url = until(portable_active, lambda: requested_console(capture, profile, port), "app browser request", timeout=30)
+                    asyncio.run(asyncio.wait_for(browser_state(endpoint, url, port, target, name, version), timeout=70))
+                except Exception as exc:
+                    raise RuntimeError(f"Portable console failed. Private log indicators: {fixture_log_flags(profile)}") from exc
+                finally:
+                    capture.unlink(missing_ok=True)
+                    capture.with_name(capture.name + ".new").unlink(missing_ok=True)
                 public(other_data, 47800, "2.4.0", other_name, other_id)
                 quit_fixture(profile, port)
         require(member_hashes(other) == original and old_keys == tuple(support.digest(other_data / f)
@@ -460,7 +536,7 @@ def worker(work, version):
         quit_fixture(other_data, 47800)
     return "OK standard-user console, custom in-place update and unaffected listener. " + (
         "Candidate digest verified against the publisher manifest." if manifest["version"] == version else
-        "Offline source-verified candidate; signed feed identifies " + manifest["version"] + ".")
+        "Offline source-verified candidate. Signed feed identifies " + manifest["version"] + ".")
 
 
 def main(legacy, candidate, version, manifest, original_version, reference):
@@ -486,7 +562,7 @@ $acl.SetSecurityDescriptorSddlForm($env:RD_SMOKE_ACL)
         marker = secrets.token_hex(16)
         locked = work / "Read only parent"
         support.create_owned(locked, acl.replace("FA;;;" + sid, "0x1200a9;;;" + sid), marker)
-        target = locked / "Assistenza Filiale Blu"
+        target = locked / CUSTOM_FOLDER
         support.create_owned(target, acl, marker)
         other = Path(extract_package(reference, work / "other"))
         old = Path(extract_package(legacy, work / "original")) if original_version == "2.3.2" else other
