@@ -15,6 +15,119 @@ from rd.updater import system_tool
 
 
 class ServiceStorageTests(unittest.TestCase):
+    def run_repair_fixture(self, cases):
+        script = Path(__file__).resolve().parents[1] / "tools" / "Ripara-permessi-servizio.ps1"
+        # Import only function definitions. No entry point, elevation, scheduler or host ACLs.
+        fixture = r"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:RD_TEST_REPAIR, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw $errors[0].Message }
+foreach ($statement in $ast.EndBlock.Statements) {
+    if ($statement -is [Management.Automation.Language.FunctionDefinitionAst]) {
+        . ([scriptblock]::Create($statement.Extent.Text))
+    }
+}
+$trusted = @('S-1-5-18','S-1-5-32-544')
+$required = '(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)'
+$readable = '(A;OICIID;0x1200a9;;;BU)(A;OICIIOID;GA;;;CO)'
+$legacy = '(A;CIID;0x116;;;BU)'
+function Descriptor([string]$sddl) {
+    [Security.AccessControl.RawSecurityDescriptor]::new($sddl)
+}
+function Inspect-ReleaseParent($raw) {
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetSecurityDescriptorSddlForm($raw.GetSddlForm('All'))
+    function Get-Item { param($LiteralPath,[switch]$Force)
+        return [pscustomobject]@{PSIsContainer=$true; Attributes=[IO.FileAttributes]::Directory}
+    }
+    function Get-Acl { param($LiteralPath) return $acl }
+    Inspect-DataParent 'C:\Synthetic\ProgramData\RemoteDesk'
+}
+"""
+        shell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command",
+             "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"],
+            input=fixture + common.WINDOWS_PRIVATE_DIRECTORY_POLICY + "\n" + cases,
+            text=True, capture_output=True, timeout=30, env={**os.environ, "RD_TEST_REPAIR": str(script)})
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "descrittori di sicurezza Windows")
+    def test_repair_removes_only_legacy_ace_and_satisfies_released_policy(self):
+        self.run_repair_fixture(r"""
+function Entries($raw) {
+    # Protecting the DACL can materialize inherited ACEs. Compare everything else, including order.
+    foreach ($entry in $raw.DiscretionaryAcl) {
+        $bytes = [byte[]]::new($entry.BinaryLength)
+        $entry.GetBinaryForm($bytes, 0)
+        $bytes[1] = $bytes[1] -band 0xef
+        [Convert]::ToBase64String($bytes)
+    }
+}
+foreach ($owner in 'BA','SY') {
+    $before = Descriptor ("O:" + $owner + "G:SYD:AI" + $required + $legacy + $readable + 'S:(AU;SA;FR;;;WD)')
+    $original = $before.GetSddlForm('All')
+    if ((Get-LegacyParentPlan $before) -ne 'Legacy') { throw 'historical descriptor not recognized' }
+    $releaseRejected = $false
+    try { Inspect-ReleaseParent $before }
+    catch { if ($_.Exception.Message -ne 'parent mutable') { throw }; $releaseRejected = $true }
+    if (!$releaseRejected) { throw 'fixture did not reproduce the 2.4.0 error' }
+
+    $expected = Descriptor ($original)
+    for ($i = 0; $i -lt $expected.DiscretionaryAcl.Count; $i++) {
+        $ace = $expected.DiscretionaryAcl[$i]
+        if ($ace.SecurityIdentifier.Value -eq 'S-1-5-32-545' -and $ace.AccessMask -eq 0x116) {
+            $expected.DiscretionaryAcl.RemoveAce($i)
+            break
+        }
+    }
+    $after = New-ParentDescriptor $before
+    if ($before.GetSddlForm('All') -cne $original) { throw 'plan mutated its input' }
+    if (($after.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -eq 0) {
+        throw 'future inheritance still enabled'
+    }
+    if (($after.GetSddlForm('Owner,Group,Audit') -cne $before.GetSddlForm('Owner,Group,Audit')) -or
+        ((@(Entries $after) -join ' ') -cne (@(Entries $expected) -join ' '))) { throw 'unexpected descriptor change' }
+    if ((Get-LegacyParentPlan $after) -ne 'Safe') { throw 'second run would modify the DACL' }
+    Inspect-ReleaseParent $after
+}
+""")
+
+    @unittest.skipUnless(os.name == "nt", "descrittori di sicurezza Windows")
+    def test_repair_only_recognizes_the_exact_historical_parent(self):
+        self.run_repair_fixture(r"""
+$base = 'O:BAG:SYD:AI' + $required + $readable
+$invalid = @(
+    ($base + '(A;CI;0x116;;;BU)'),
+    ($base + '(A;OICIID;0x116;;;BU)'),
+    ($base + '(A;CIIOID;0x116;;;BU)'),
+    ($base + '(A;CINPID;0x116;;;BU)'),
+    ($base + '(A;CIID;0x116;;;AU)'),
+    ($base + $legacy + $legacy),
+    ($base + $legacy + '(A;;DC;;;AU)'),
+    ($base + $legacy + '(A;;GW;;;WD)'),
+    ('O:BAG:SYD:AI(D;;DC;;;AN)' + $required + $readable + $legacy),
+    ('O:BAG:SYD:AI(A;;FR;;;AU)' + $required + $readable + $legacy),
+    ('O:BUG:SYD:AI' + $required + $readable + $legacy),
+    ('O:BAG:SYD:PAI' + $required + $readable + $legacy),
+    ('O:BAG:SYD:AI(A;OICIID;FA;;;SY)' + $readable + $legacy),
+    'O:BAG:SY'
+)
+foreach ($mask in '0x2','0x4','0x100','0x156','0x10116','0x40116','0x80116') {
+    $invalid += $base + "(A;CIID;$mask;;;BU)"
+}
+foreach ($sddl in $invalid) {
+    $raw = Descriptor $sddl
+    $original = $raw.GetSddlForm('All')
+    $rejected = $false
+    try { $state = Get-LegacyParentPlan $raw } catch { $rejected = $true }
+    if (!$rejected -and $state -in 'Safe','Legacy') { throw "accepted unexpected descriptor $sddl" }
+    if ($raw.GetSddlForm('All') -cne $original) { throw 'inspection altered a rejected descriptor' }
+}
+""")
+
     @unittest.skipUnless(os.name == "nt", "Task Scheduler Windows simulato")
     def test_migrates_only_known_task_and_preserves_dacl(self):
         # Intercetta la creazione COM: nessun accesso allo scheduler della macchina.
