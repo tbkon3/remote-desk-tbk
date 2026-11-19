@@ -23,8 +23,11 @@ def default_profile():
 
 def is_bundle(root):
     base = Path(root)
-    return (_canonical(base) != _canonical(INSTALL_DIR) and (base / "RemoteDesk.exe").is_file()
-            and (base / "runtime" / "pythonw.exe").is_file() and (base / "app" / "remotedesk.py").is_file())
+    if _canonical(base) == _canonical(INSTALL_DIR) or not (base / "RemoteDesk.exe").is_file():
+        return False
+    if not (base / "runtime" / "pythonw.exe").is_file() or not (base / "app" / "remotedesk.py").is_file():
+        raise RuntimeError("Copia portabile incompleta. Estrarre tutti i file dello ZIP nella stessa cartella.")
+    return True
 
 
 def _overlaps(first, second):
@@ -57,7 +60,9 @@ def _read(path):
 
 def _legacy_autostart(root):
     from .winapi import autostart_get
-    return (autostart_get() or "").casefold() == f'"{Path(root) / "RemoteDesk.exe"}" --minimized'.casefold()
+    command = autostart_get()
+    expected = f'"{Path(root) / "RemoteDesk.exe"}" --minimized'
+    return isinstance(command, str) and command.casefold() == expected.casefold()
 
 
 def _legacy_inactive():
@@ -75,13 +80,20 @@ def _legacy_inactive():
 def _has_legacy_identity(folder):
     try:
         with (folder / "machine.key").open("rb") as key:
-            if len(base64.b64decode(key.read(100).strip(), validate=True)) != 32:
+            raw = key.read(101)
+            if len(raw) > 100 or len(base64.b64decode(raw.strip(), validate=True)) != 32:
                 return False
-        with (folder / "config.json").open(encoding="utf8") as config:
-            doc = json.load(config)
-        return isinstance(doc, dict) and re.fullmatch("[0-9]{9}", str(doc.get("id", ""))) is not None
-    except (OSError, ValueError, RecursionError):
+    except (OSError, ValueError):
         return False
+    for name in ("config.json", "config.json.bak"):
+        try:
+            with (folder / name).open(encoding="utf8") as config:
+                doc = json.load(config)
+            if isinstance(doc, dict) and re.fullmatch("[0-9]{9}", str(doc.get("id", ""))):
+                return True
+        except (OSError, ValueError, RecursionError):
+            continue
+    return False
 
 
 def installed_profile(override):
@@ -89,12 +101,14 @@ def installed_profile(override):
     base = default_profile().parent
     legacy = base.parent / "data"
     data = Path(override) if override else legacy
+    if override and _overlaps(data, Path(PROGRAM_DATA).parent):
+        raise PermissionError("Il profilo del servizio è riservato al servizio Windows.")
     if not (data / "portable.lock").is_file():
         return override
     if override:
         raise PermissionError("Questa cartella dati è riservata a un'istanza portabile.")
     separate = base.parent / "installed-data"
-    private_dir(separate)
+    private_dir(separate, profile=True)
     return str(separate)
 
 
@@ -178,23 +192,36 @@ class Instance:
             if _canonical(self.profile) == _canonical(self.legacy) and self.registered:
                 raise PermissionError("Il profilo storico può appartenere al servizio. Usare il profilo portabile.")
             return
-        if (self.profile / "config.json").exists() or self.registered:
+        if self.registered or any((self.profile / name).exists() for name in ("config.json", "config.json.bak", "machine.key")):
             return
-        if not (self.legacy / "config.json").is_file() or not (self.legacy / "machine.key").is_file():
-            return
-        private_dir(self.legacy, profile=True)
-        receipt = _read(self.legacy / ".update-pending.json")
         migrated = _read(self.base / "legacy.json").get("data") == _canonical(self.legacy)
+        if migrated:
+            if not self.legacy.is_dir():
+                raise RuntimeError("Profilo portabile precedente non disponibile. Verificare il percorso e il backup.")
+            private_dir(self.legacy, profile=True)
+            if not _has_legacy_identity(self.legacy):
+                raise RuntimeError("Impossibile leggere l'identità portabile precedente. Verificare il profilo e il backup.")
+            self.profile = self.legacy
+            return
+        if not self.legacy.is_dir():
+            return
+        try:
+            private_dir(self.legacy, profile=True)
+            receipt = _read(self.legacy / ".update-pending.json")
+        except (OSError, ValueError):
+            # A historical directory without established provenance cannot supply this identity.
+            return
         updating = (receipt.get("version") == VERSION and receipt.get("target") == self.root
                     and isinstance(receipt.get("nonce"), str) and re.fullmatch("[a-f0-9]{64}", receipt["nonce"]))
-        identified = (not migrated and not updating and not Path(INSTALL_DIR, "RemoteDesk.exe").exists()
+        identified = (not updating and not Path(INSTALL_DIR, "RemoteDesk.exe").exists()
                       and _legacy_autostart(self.root) and _legacy_inactive())
-        if migrated or ((updating or identified) and _has_legacy_identity(self.legacy)):
+        if updating or identified:
+            if not _has_legacy_identity(self.legacy):
+                raise RuntimeError("Il profilo utente precedente non contiene un'identità valida. Verificare il backup.")
             self.profile = self.legacy
 
     def __enter__(self):
         try:
-            private_dir(self.base.parent)
             private_dir(self.base, files=("legacy.json",))
             self._select()
             if (str(self.profile).startswith("\\\\") or _overlaps(self.profile, Path(PROGRAM_DATA).parent)

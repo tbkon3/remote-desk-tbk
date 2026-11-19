@@ -234,7 +234,7 @@ class UpdateStateTests(unittest.TestCase):
         self.populate()
 
     def populate(self):
-        self.u.info = {"version": "99.0.0", "expires": int(time.time()+1000)}
+        self.u.info = {"version": "99.0.0", "expires": int(time.time()+1000), "size": 1}
         self.u.checked_at, self.u.checked_url = time.monotonic(), self.u.url
 
     def test_negotiating_or_active_role_pauses_automatic_update(self):
@@ -280,11 +280,14 @@ class UpdateStateTests(unittest.TestCase):
             self.agent.cfg["on_air"] = True
             return folder
         self.u._check = AsyncMock()
-        self.u._download_and_stage = stage
-        with (patch.object(update, "WIN", True), patch.object(self.u, "_launch_updater") as launch,
+        self.u._download_and_stage = AsyncMock(side_effect=stage)
+        with (patch.object(update, "WIN", True), patch.object(update, "portable_preflight"),
+              patch.object(self.u, "_launch_updater") as launch,
               self.assertLogs(update.log, level="ERROR"), self.assertRaises(RuntimeError)):
             await self.u.install("test")
         launch.assert_not_called()
+        self.u._download_and_stage.assert_awaited_once()
+        self.assertFalse(self.agent.stop_event.is_set())
         self.assertEqual(list((Path(self.temp.name) / "update").iterdir()), [])
 
 

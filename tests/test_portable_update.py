@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -20,6 +21,14 @@ from rd import updater as helper
 
 class PortableUpdateTests(unittest.TestCase):
     def setUp(self):
+        # Filesystem objects, sharing and renames are real. ACL and instance
+        # ownership have dedicated native/offline tests and a Windows smoke test.
+        private = patch("rd.portable_storage.private_dir", side_effect=lambda path, **kw: Path(path).mkdir(mode=0o700, exist_ok=True))
+        private.start()
+        self.addCleanup(private.stop)
+        lock = patch.object(helper, "_copy_instance", side_effect=lambda *_: contextlib.nullcontext())
+        lock.start()
+        self.addCleanup(lock.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.work = Path(self.temp.name).resolve()
@@ -229,6 +238,7 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
             with (patch.object(update, "WIN", True), patch.object(update, "ROOT_DIR", str(target)),
                   patch.object(sys, "executable", str(target / "runtime/pythonw.exe")), patch.object(update, "RELEASE_PUB", pub),
                   patch.object(update, "ClientSession", Transport), patch.object(asyncio, "sleep", sleep),
+                  patch("rd.portable_storage.private_dir", side_effect=lambda p, **kw: Path(p).mkdir(mode=0o700, exist_ok=True)),
                   patch.object(manager, "_launch_updater", side_effect=launch) as started):
                 for auto, busy in [(False, False), (True, True), (True, False)]:
                     agent.cfg["auto_update"] = auto

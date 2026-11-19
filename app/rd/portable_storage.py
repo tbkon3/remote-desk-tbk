@@ -26,8 +26,10 @@ def _check_acl(owner, entries, user, *, private, directory):
     trusted = {user, SYSTEM, ADMINS}
     if not private:
         trusted.add(TRUSTED_INSTALLER)
-    if owner not in trusted or entries is None:
-        raise PermissionError(DENIED)
+    if owner not in trusted:
+        raise PermissionError(f"Proprietario non attendibile: {owner}")
+    if entries is None:
+        raise PermissionError("DACL assente")
     # With no inheritable trusted ACE, newly created children could receive a
     # process default DACL. Require a grant for both child files and directories.
     inherit = 0
@@ -35,7 +37,7 @@ def _check_acl(owner, entries, user, *, private, directory):
         if kind == 1:  # ACCESS_DENIED_ACE cannot grant access
             continue
         if kind != 0:
-            raise PermissionError(DENIED)
+            raise PermissionError(f"Tipo ACE non riconosciuto: tipo={kind} flags=0x{flags:02x} mask=0x{mask:08x}")
         if sid in trusted:
             if mask & 0x1f01ff == 0x1f01ff and not flags & 4:  # no NO_PROPAGATE
                 inherit |= flags & 3
@@ -47,9 +49,10 @@ def _check_acl(owner, entries, user, *, private, directory):
         # In a private target, even reading its files/listing its names is denied.
         forbidden = 0xffffffff if private else 0x500d0150
         if mask & forbidden:
-            raise PermissionError(DENIED)
+            raise PermissionError(f"Accesso non privato: SID={sid} flags=0x{flags:02x} "
+                                  f"mask=0x{mask:08x} vietati=0x{mask & forbidden:08x}")
     if private and directory and inherit != 3:
-        raise PermissionError(DENIED)
+        raise PermissionError(f"Permessi ereditabili insufficienti: OI/CI=0x{inherit:x}")
 
 
 class _Storage(_Windows):
@@ -88,7 +91,7 @@ class _Storage(_Windows):
             raise ct.WinError(result)
         try:
             if not owner.value or not acl.value:
-                raise PermissionError(DENIED)
+                raise PermissionError("Proprietario o DACL assenti")
             entries = []
             # The validated ACL returned by GetSecurityInfo begins with ACL_HEADER.
             ace_count = ct.c_uint16.from_address(acl.value + 4).value
@@ -117,7 +120,11 @@ class _Storage(_Windows):
             _require(self.info(handle, info))
             if info[0] & 0x400 or bool(info[0] & 0x10) != directory or (not directory and info[10] != 1):
                 raise PermissionError(DENIED)
-            self.check_security(handle, private=private, directory=directory)
+            try:
+                self.check_security(handle, private=private, directory=directory)
+            except PermissionError as exc:
+                role = "oggetto privato" if private else "antenato"
+                raise PermissionError(f"{DENIED} ({role} {path!s}; {exc})") from exc
             yield
         finally:
             self.close(handle)
@@ -174,6 +181,9 @@ def _posix_dir(target, files, profile):
             raise PermissionError(DENIED)
         if private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
             raise PermissionError(DENIED)
+        if not private and (info.st_uid not in (0, os.getuid()) or
+                            (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX)):
+            raise PermissionError(DENIED)
         yield
 
     for path in (*reversed(target.parents), target):
@@ -181,5 +191,7 @@ def _posix_dir(target, files, profile):
             with inspect(path, private=path == target, directory=True):
                 pass
         except FileNotFoundError:
-            path.mkdir(mode=0o700)
+            path.mkdir(mode=0o700, exist_ok=True)
+            with inspect(path, private=True, directory=True):
+                pass
     _children(target, files, profile, inspect)

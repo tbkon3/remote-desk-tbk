@@ -111,6 +111,42 @@ class PortableIdentity(unittest.TestCase):
         with portable.Instance(self.root) as next_boot:
             self.assertEqual(next_boot.profile, self.legacy)
 
+    def test_previous_profile_can_recover_from_backup_but_not_from_a_missing_key(self):
+        self.legacy.mkdir(parents=True)
+        (self.legacy / "config.json.bak").write_text('{"id":"123456789"}')
+        (self.legacy / "machine.key").write_bytes(base64.b64encode(bytes(32)))
+        with portable.Instance(self.root, self.legacy) as first:
+            first.reserve(None)
+        with portable.Instance(self.root) as restored:
+            self.assertEqual(restored.profile, self.legacy)
+        (self.legacy / "machine.key").unlink()
+        with self.assertRaisesRegex(RuntimeError, "backup"):
+            with portable.Instance(self.root):
+                pass
+
+    def test_dedicated_recoverable_profile_takes_precedence_over_old_autostart(self):
+        self.legacy.mkdir(parents=True)
+        (self.legacy / "config.json").write_text('{"id":"123456789"}')
+        (self.legacy / "machine.key").write_bytes(base64.b64encode(bytes(32)))
+        self.autostart.return_value = True
+        self.default.mkdir(parents=True)
+        (self.default / "config.json.bak").write_text('{"id":"123456788"}')
+        with portable.Instance(self.root) as recovered:
+            self.assertEqual(recovered.profile, self.default)
+
+    def test_unclaimed_insecure_legacy_profile_does_not_block_fresh_portable(self):
+        self.legacy.mkdir(parents=True)
+        self.autostart.return_value = True
+
+        def check_path(path, **options):
+            if path == self.legacy:
+                raise PermissionError("untrusted")
+            self.assertNotEqual(path, self.default.parent.parent)
+            Path(path).mkdir(parents=True, exist_ok=True)
+
+        with patch.object(portable, "private_dir", side_effect=check_path), portable.Instance(self.root) as fresh:
+            self.assertEqual(fresh.profile, self.default)
+
     def test_new_profile_auto_updates_existing_opt_out_survives(self):
         self.default.mkdir(parents=True)
         fresh = remotedesk.load_config(str(self.default), True)
@@ -138,6 +174,8 @@ class PortableIdentity(unittest.TestCase):
         self.assertFalse(self.service.exists())
         self.assertFalse(self.root.exists())
         self.bind.assert_not_called()
+        with self.assertRaises(PermissionError):
+            portable.installed_profile(self.service)
 
     def test_stale_rendezvous_removed_without_attaching_after_failed_bind(self):
         self.default.mkdir(parents=True)
@@ -210,6 +248,9 @@ class PortableIdentity(unittest.TestCase):
             for flag in ("--service", "--session-agent", "--install-service", "--uninstall-service"):
                 with patch.object(sys, "argv", ["RemoteDesk.exe", flag]), self.assertRaises(PermissionError):
                     remotedesk.main()
+            (self.root / "runtime/pythonw.exe").unlink()
+            with patch.object(sys, "argv", ["RemoteDesk.exe", "--agent-only"]), self.assertRaisesRegex(RuntimeError, "incompleta"):
+                remotedesk.main()
 
 
 _real_listener = portable._listener

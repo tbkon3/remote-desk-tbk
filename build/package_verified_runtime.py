@@ -199,7 +199,9 @@ def build(repo, ref, output, issued, expires, version=VERSION):
             digest = hashlib.file_digest(handle, "sha256").hexdigest()
         (stage / "SHA256SUMS").write_bytes(f"{digest}  {filename}\n".encode("ascii"))
         notes = NOTES if version == VERSION else (
-            "Aggiornamento del pacchetto portabile per Windows. Chiudere le sessioni prima del riavvio.")
+            "La copia portabile si aggiorna nella cartella da cui è stata avviata. "
+            "Chiudi le sessioni prima del riavvio. Se parti dalla 2.3.2, aggiorna entrambi i PC "
+            "e apri una nuova sessione dalla console della nuova versione.")
         body = dict(version=version, file=filename, url=FEED + filename, size=package.stat().st_size, sha256=digest,
                     issued=issued, expires=expires, date=datetime.fromtimestamp(issued, timezone.utc).date().isoformat(),
                     notes=notes)
