@@ -31,12 +31,12 @@ import logging  # noqa: E402
 log = logging.getLogger("rd")
 
 
-def api(port, path, body=None, timeout=2, data_dir=None):
+def api(port, path, body=None, timeout=2, data_dir=None, *, owner_only=False):
     from rd.local_access import native_headers
     try:
         data = json.dumps(body).encode() if body is not None else None
         method = "POST" if data is not None else "GET"
-        headers = native_headers(port, path, method, data_dir=data_dir)
+        headers = native_headers(port, path, method, data_dir=data_dir, owner_only=owner_only)
         headers["Content-Type"] = "application/json"
         req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, headers=headers, method=method)
         class LocalOnly(urllib.request.HTTPRedirectHandler):
@@ -50,40 +50,61 @@ def api(port, path, body=None, timeout=2, data_dir=None):
         return None
 
 
-def agent_alive(port, data_dir=None):
-    r = api(port, "/api/ping", timeout=1.5, data_dir=data_dir)
+def agent_alive(port, data_dir=None, *, owner_only=False):
+    r = api(port, "/api/ping", timeout=1.5, data_dir=data_dir, owner_only=owner_only)
     return bool(r and r.get("app") == "remotedesk")
 
 
 # =========================================================================== agente
-async def run_agent(data_dir, port, service_mode=False, parent=None, stop_flag=None):
+def load_config(data_dir, portable_instance):
+    from rd.common import Config
+    new_profile = portable_instance and not any(os.path.lexists(os.path.join(data_dir, name))
+                                                for name in ("config.json", "config.json.bak", "machine.key"))
+    cfg = Config(data_dir)
+    if new_profile and cfg.get("auto_update") is None:
+        cfg.update(auto_update=True)
+    return cfg
+
+
+async def run_agent(data_dir, port, service_mode=False, parent=None, stop_flag=None, instance=None):
     from aiohttp import web
     from rd.agent import Agent
     from rd.web import make_app
 
-    from rd.common import Config
-    cfg = Config(data_dir)
+    cfg = load_config(data_dir, instance is not None)
     agent = Agent(cfg, data_dir, service_mode=service_mode)
+    agent.portable = instance is not None
     agent.port = port
     loop = asyncio.get_running_loop()
     app = make_app(agent, port, lambda: agent.stop_event.set())
     runner = web.AppRunner(app, access_log=None, shutdown_timeout=2)   # chiusura rapida anche con richieste aperte
     await runner.setup()
-    for attempt in range(60):
+    if instance is not None:
+        sock = instance.sock.dup()
         try:
-            await web.TCPSite(runner, "127.0.0.1", port).start()
-            break
-        except OSError:
-            if attempt == 0:
-                log.info("porta %s occupata, attendo...", port)
-            await asyncio.sleep(1)
+            await web.SockSite(runner, sock).start()
+        except BaseException:
+            sock.close()
+            await runner.cleanup()
+            raise
     else:
-        log.error("porta %s non disponibile", port)
-        await runner.cleanup()
-        return
+        for attempt in range(60):
+            try:
+                await web.TCPSite(runner, "127.0.0.1", port).start()
+                break
+            except OSError:
+                if attempt == 0:
+                    log.info("porta %s occupata, attendo...", port)
+                await asyncio.sleep(1)
+        else:
+            log.error("porta %s non disponibile", port)
+            await runner.cleanup()
+            return
     log.info("agente pronto: ID %s, http://127.0.0.1:%s/ (servizio=%s)", fmt_id(cfg["id"]), port, service_mode)
     from rd.common import write_private
     write_private(os.path.join(data_dir, "local.token"), agent.local_token)
+    if instance is not None:
+        instance.ready()
     agent.start_networks()
     tasks = [asyncio.ensure_future(agent.housekeeping()),
              asyncio.ensure_future(agent.cursor_watch()), asyncio.ensure_future(agent.updater.loop())]
@@ -107,8 +128,9 @@ async def run_agent(data_dir, port, service_mode=False, parent=None, stop_flag=N
 
 
 class AgentThread:
-    def __init__(self, data_dir, port):
+    def __init__(self, data_dir, port, instance=None):
         self.data_dir, self.port = data_dir, port
+        self.instance = instance
         self.stop_flag = threading.Event()
         self.updating = False
         self.thread = threading.Thread(target=self._run, daemon=True, name="agent")
@@ -116,7 +138,8 @@ class AgentThread:
 
     def _run(self):
         try:
-            self.updating = bool(asyncio.run(run_agent(self.data_dir, self.port, stop_flag=self.stop_flag)))
+            self.updating = bool(asyncio.run(run_agent(self.data_dir, self.port, stop_flag=self.stop_flag,
+                                                       instance=self.instance)))
         except Exception:
             log.exception("agente terminato con errore")
 
@@ -130,17 +153,21 @@ class AgentThread:
 
 # =========================================================================== app utente (tray)
 class App:
-    def __init__(self, args, data_dir):
+    def __init__(self, args, data_dir, instance=None):
         self.args, self.data_dir, self.port = args, data_dir, args.port
+        self.instance = instance
+        self.owner_only = instance is not None
         self.agent = None
         self.icon = None
         self.quit = threading.Event()
         self.last_sessions = set()
 
     def service_installed(self):
-        return service_installed(self.data_dir)
+        return not self.owner_only and service_installed(self.data_dir)
 
     def remove_service(self, *_):
+        if self.owner_only:
+            return
         from rd import service
         service.elevate("--uninstall-service", user_data=self.data_dir)
 
@@ -149,23 +176,23 @@ class App:
             return
         if self.agent and self.agent.alive():
             return
-        if agent_alive(self.port, self.data_dir):
+        if not self.owner_only and agent_alive(self.port, self.data_dir):
             return
         if self.service_installed():
             return  # ci pensa il servizio
         log.info("avvio agente utente")
-        self.agent = AgentThread(self.data_dir, self.port)
+        self.agent = AgentThread(self.data_dir, self.port, self.instance)
 
     def open_console(self, *_):
         from rd.agent import open_console
         for _ in range(40):
-            if agent_alive(self.port, self.data_dir):
-                break
+            if agent_alive(self.port, self.data_dir, owner_only=self.owner_only):
+                open_console(self.port, data_dir=self.data_dir, owner_only=self.owner_only)
+                return
             time.sleep(0.25)
-        open_console(self.port, data_dir=self.data_dir)
 
     def close_all(self, *_):
-        api(self.port, "/api/sessions/close", {}, data_dir=self.data_dir)
+        api(self.port, "/api/sessions/close", {}, data_dir=self.data_dir, owner_only=self.owner_only)
 
     def exit(self, *_):
         """Voce "Esci": l'icona sparisce subito, l'agente ha pochi secondi per chiudersi in modo pulito,
@@ -202,7 +229,7 @@ class App:
                         self.icon.stop()
                     os._exit(0)
                 self.ensure_agent()
-                st = api(self.port, "/api/public", data_dir=self.data_dir)
+                st = api(self.port, "/api/public", data_dir=self.data_dir, owner_only=self.owner_only)
                 if st and self.icon:
                     cur = {s["sid"]: s for s in st["sessions"] if s["connected"]}
                     for sid in set(cur) - self.last_sessions:
@@ -220,11 +247,11 @@ class App:
         from rd.agent import open_chat_window
         last_open, last_notified = 0, 0
         while not self.quit.is_set():
-            st = api(self.port, "/api/chat", timeout=1.5, data_dir=self.data_dir)
+            st = api(self.port, "/api/chat", timeout=1.5, data_dir=self.data_dir, owner_only=self.owner_only)
             if st and st.get("unread") and not st.get("window"):
                 if time.time() - last_open > 20:
                     last_open = time.time()
-                    open_chat_window(self.port, data_dir=self.data_dir)
+                    open_chat_window(self.port, data_dir=self.data_dir, owner_only=self.owner_only)
                 newest = st.get("latest", 0)
                 if self.icon and newest > last_notified:
                     last_notified = newest
@@ -250,7 +277,7 @@ class App:
         self.images = [Image.open(os.path.join(os.path.dirname(__file__), "web", f)) for f in
                        ("icon.png", "icon-active.png")]
         def id_label(_):   # l'ID lo chiedo all'agente: con il servizio i dati non sono leggibili dall'utente
-            st = api(self.port, "/api/public", timeout=1, data_dir=self.data_dir)
+            st = api(self.port, "/api/public", timeout=1, data_dir=self.data_dir, owner_only=self.owner_only)
             return f"ID {st['me']['fid']}" if st else "RemoteDesk"
         menu = pystray.Menu(
             pystray.MenuItem(id_label, None, enabled=False),
@@ -269,6 +296,29 @@ class App:
         self.finish()
 
 
+def run_portable(args, root):
+    from rd.agent import open_console
+    from rd.portable import Instance
+    with Instance(root, args.data) as instance:
+        data_dir = str(instance.profile)
+        if not instance.owner:
+            for _ in range(40):
+                port = instance.existing_port()
+                if port and agent_alive(port, data_dir, owner_only=True):
+                    if not (args.minimized or args.agent_only or args.no_browser):
+                        open_console(port, data_dir=data_dir, owner_only=True)
+                    return
+                time.sleep(0.25)
+            raise RuntimeError("Il profilo è in uso ma la console della copia portabile non è ancora verificabile.")
+        instance.reserve(args.port)
+        args.port = instance.port
+        setup_logging(data_dir, "portable", args.verbose)
+        if args.agent_only:
+            asyncio.run(run_agent(data_dir, args.port, instance=instance))
+        else:
+            App(args, data_dir, instance).run()
+
+
 def main():
     ap = argparse.ArgumentParser(description="RemoteDesk")
     ap.add_argument("--minimized", action="store_true")
@@ -282,11 +332,35 @@ def main():
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--data", help="cartella dati alternativa")
     ap.add_argument("--from-data", help=argparse.SUPPRESS)
-    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--port", type=int)
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
     privileged = args.service or args.session_agent or args.install_service or args.uninstall_service
+    if WIN:
+        from rd.common import INSTALL_DIR, ROOT_DIR
+        from rd.portable import installed_profile, is_bundle
+        canonical = os.path.normcase(os.path.realpath(ROOT_DIR)) == os.path.normcase(os.path.realpath(INSTALL_DIR))
+        if privileged and not canonical:
+            raise PermissionError("La gestione del servizio richiede la copia nella cartella protetta di installazione.")
+        if args.service or args.session_agent:
+            from rd.local_access_win import running_as_system
+            trusted = os.path.join(INSTALL_DIR, "runtime", "pythonw.exe")
+            if (os.path.normcase(os.path.realpath(sys.executable)) != os.path.normcase(os.path.realpath(trusted))
+                    or not running_as_system()):
+                raise PermissionError("Il servizio richiede il runtime di installazione e l'identità SYSTEM.")
+        if not privileged and is_bundle(ROOT_DIR):
+            try:
+                run_portable(args, ROOT_DIR)
+            except (OSError, ValueError, RuntimeError) as exc:
+                if args.agent_only or args.no_browser or args.minimized:
+                    raise
+                W.message_box(str(exc), "RemoteDesk portabile")
+                raise SystemExit(1) from exc
+            return
+        if not privileged and canonical:
+            args.data = installed_profile(args.data)
+    args.port = args.port if args.port is not None else DEFAULT_PORT
     data_dir = pick_data_dir(args.data, service=privileged)
     mode = ("service" if args.service else "session-agent" if args.session_agent else
             "install" if args.install_service or args.uninstall_service else "app")

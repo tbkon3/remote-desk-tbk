@@ -22,7 +22,7 @@ class WebAuthIntegration(unittest.IsolatedAsyncioTestCase):
         self.desktop_key = b"d" * 32
         self.agent = Agent.__new__(Agent)
         self.agent.local_token = self.key.decode()
-        self.agent.cfg, self.agent.logins = {}, {}
+        self.agent.cfg, self.agent.logins = defaultdict(str), {}
         self.agent.service_mode = True
         self.agent.close_sessions = AsyncMock()
         self.quit = Mock()
@@ -63,7 +63,7 @@ class WebAuthIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_update_target_is_private_and_portable_controls_do_not_touch_windows(self):
         owner, desktop = await self.browser("owner"), await self.browser("desktop")
         portable_dir, service_dir = r"C:\fixture\portable", r"C:\fixture\managed"
-        self.agent.cfg = defaultdict(str, name="fixture", id="111222333")
+        self.agent.cfg.update(name="fixture", id="111222333")
         self.agent.nets, self.agent.sessions, self.agent.events = {}, {}, []
         self.agent.data_dir, self.agent.cloned = "data-fixture", False
         self.agent.logged_user = lambda: "fixture"
@@ -86,6 +86,7 @@ class WebAuthIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(response.text)["update_target"], {"mode":mode, "path":location})
             self.assertEqual((await self.dispatch("GET", "/api/update/local", desktop)).status, 403)
             public = await self.dispatch("GET", "/api/public", desktop)
+            self.assertEqual(public.status, 200, public.text)
             data = json.loads(public.text)
             self.assertNotIn("update_target", data)
             self.assertNotIn("error", data["update"])

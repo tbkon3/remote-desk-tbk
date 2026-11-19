@@ -1,4 +1,4 @@
-# RemoteDesk 2.4.0 per Windows
+# RemoteDesk per Windows
 
 RemoteDesk collega due PC registrati nella stessa rete di assistenza. Dalla rubrica il tecnico può vedere o controllare il desktop, trasferire file in una cartella condivisa e consultare l'inventario Windows. Ogni operazione richiede i permessi previsti sul PC assistito. Il pacchetto portabile include Python per Windows a 64 bit.
 
@@ -19,7 +19,15 @@ if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $atteso) { throw
 'Impronta verificata'
 ```
 
-L'hash permette di confrontare i byte con quelli pubblicati. Per la provenienza usa il canale di distribuzione approvato dalla tua organizzazione. Il pacchetto include l'avviatore originale, quindi le proprietà di `RemoteDesk.exe` in Esplora file riportano **2.3.2**. Controlla in **Impostazioni** che la console indichi **2.4.0**, la versione dell'applicazione avviata.
+L'hash permette di confrontare i byte con quelli pubblicati. Per la provenienza usa il canale di distribuzione approvato dalla tua organizzazione. Il pacchetto include l'avviatore originale, quindi le proprietà di `RemoteDesk.exe` in Esplora file riportano **2.3.2**. In **Impostazioni → Aggiornamenti** confronta la versione dell'applicazione avviata con quella indicata nel nome dello ZIP.
+
+## Uso da una cartella personalizzata
+
+Dalla 2.4.1 estrai l'intero ZIP in una cartella locale in cui il tuo account Windows possa creare, modificare e rinominare file, per esempio `D:\Strumenti\Assistenza\RemoteDesk`. Apri `RemoteDesk.exe` e controlla in **Impostazioni → Aggiornamenti** la modalità e il percorso della copia attiva. Quando installi una versione firmata, RemoteDesk riavvia quella copia nella stessa cartella. Tieni i tuoi documenti fuori da `app` e `runtime`, che contengono il programma.
+
+Per spostare la copia, chiudila dall'icona, sposta la cartella completa e riaprila con lo stesso account Windows. Il profilo portabile resta nel profilo utente del PC. Su una postazione con servizio già installato, la prima estrazione della 2.4.1 può creare un nuovo ID portabile. In questo caso scegli **Entra in una rete esistente** per registrarlo. Per usare di nuovo il servizio, apri la sua icona dalla postazione amministrata.
+
+Se la console 2.3.2 mostra ancora il vecchio servizio dopo un aggiornamento, puoi passare direttamente al portabile estraendo lo ZIP 2.4.1 in una nuova cartella. Chiudi la vecchia finestra e apri la console dall'icona della nuova copia.
 
 ## Aggiornamento da 2.3.2
 

@@ -11,6 +11,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from cryptography.exceptions import InvalidSignature
@@ -24,6 +25,39 @@ spec.loader.exec_module(pack)
 
 
 class PilotPackage(unittest.TestCase):
+    def test_stable_verifier_requires_publisher_signature_and_exact_packaged_bytes(self):
+        verify_spec = importlib.util.spec_from_file_location("verify_release_feed", path.parents[1] / "tests/verify_release_feed.py")
+        verifier = importlib.util.module_from_spec(verify_spec)
+        verify_spec.loader.exec_module(verifier)
+        key = Ed25519PrivateKey.generate()
+        pub = base64.b64encode(key.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode("ascii")
+        name = "RemoteDesk-2.4.1.zip"
+        data = b"fixture package"
+        digest = hashlib.sha256(data).hexdigest()
+        now = int(time.time())
+        signed = {"version": "2.4.1", "file": name, "url": pack.FEED + name, "size": len(data),
+                  "sha256": digest, "issued": now, "expires": now + 86400,
+                  "date": datetime.fromtimestamp(now, timezone.utc).date().isoformat()}
+        signed["sig"] = base64.b64encode(key.sign(verifier.auth.canon(signed))).decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp, patch.multiple(verifier, PUB=pub, ROOT=Path(tmp)):
+            dist = Path(tmp) / "dist"
+            dist.mkdir()
+            manifest = dist / "latest.json"
+            manifest.write_text(json.dumps(signed), encoding="utf-8")
+            (dist / name).write_bytes(data)
+            (dist / (name + ".sha256")).write_bytes(f"{digest}  {name}\n".encode("ascii"))
+            with patch("builtins.print"):
+                verifier.verify("2.4.1")
+            with self.assertRaisesRegex(ValueError, "destination"):
+                verifier.verify("2.4.0")
+            (dist / name).write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "Archive"):
+                verifier.verify("2.4.1")
+            manifest.write_text(json.dumps(dict(signed, sha256="a" * 64)), encoding="utf-8")
+            with self.assertRaises(InvalidSignature):
+                verifier.verify("2.4.1")
+
     def test_rejects_archive_collisions_extra_roots_and_links(self):
         bad = [
             ["RemoteDesk/app/a", "RemoteDesk/App/b"],

@@ -205,7 +205,12 @@ def smoke(archive, version=VERSION):
         verify_launcher(root / "RemoteDesk.exe")
         profile = work / "isolated profile"
         data = profile / "agent data"
-        data.mkdir(parents=True)
+        profile.mkdir()
+        if version == "2.4.1":
+            from rd.portable_storage import private_dir
+            private_dir(data)
+        else:
+            data.mkdir()
         config = {"id": FIXTURE_ID, "name": FIXTURE_NAME, "security_defaults": 1, "update_url": "", "auto_update": False,
                   "network": "", "networks": [], "known": {}, "signal": "", "stun": [], "turn_url": "", "accept_incoming": False}
         (data / "config.json").write_text(json.dumps(config), encoding="utf-8")

@@ -1,0 +1,216 @@
+name: Windows 2.4.1 portable pilot
+on:
+  pull_request:
+    paths: ['app/**', 'build/**', 'tests/**', '.github/workflows/windows-pilot-241.yml', 'dist/latest.json', 'dist/RemoteDesk-2.4.1.zip*']
+  push:
+    branches: [main]
+    paths: ['app/**', 'build/**', 'tests/**', '.github/workflows/windows-pilot-241.yml', 'dist/latest.json', 'dist/RemoteDesk-2.4.1.zip*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - id: mode
+        name: Individua il candidato o la promozione firmata
+        shell: pwsh
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          $v = [version](Get-Content -Raw dist/latest.json | ConvertFrom-Json).version
+          $mode = 'skip'
+          if ($v -eq [version]'2.4.0') {
+            if ((Test-Path -LiteralPath 'dist/RemoteDesk-2.4.1.zip') -or (Test-Path -LiteralPath 'dist/RemoteDesk-2.4.1.zip.sha256')) {
+              throw 'Promozione incompleta: verificare ZIP, impronta e feed firmato nello stesso commit.'
+            }
+            $mode = 'build'
+          } elseif ($v -eq [version]'2.4.1') {
+            $mode = 'verify'
+            if ($env:BEFORE -match '^[a-f0-9]{40}$' -and $env:BEFORE -notmatch '^0+$') {
+              git diff --quiet "$env:BEFORE" HEAD -- dist/latest.json dist/RemoteDesk-2.4.1.zip dist/RemoteDesk-2.4.1.zip.sha256
+              if ($LASTEXITCODE -eq 0) { $mode = 'skip' } elseif ($LASTEXITCODE -ne 1) { exit $LASTEXITCODE }
+            }
+          }
+          "mode=$mode" >> $env:GITHUB_OUTPUT
+          exit 0
+      - if: steps.mode.outputs.mode != 'skip'
+        run: python -m pip install cryptography==46.0.3
+      - name: Confeziona i sorgenti del commit con il runtime autenticato
+        if: steps.mode.outputs.mode == 'build'
+        shell: pwsh
+        run: |
+          python build/package_verified_runtime.py --version 2.4.1 --source-ref $env:GITHUB_SHA --output-dir "$env:RUNNER_TEMP/remotedesk-pilot" --issued-at $([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+      - name: Verifica firma Ed25519, destinazione, scadenza, hash e dimensione della pubblicazione
+        if: steps.mode.outputs.mode == 'verify'
+        run: python tests/verify_release_feed.py --version 2.4.1
+      - name: Verifica il launcher, la versione attiva e la console su loopback
+        if: steps.mode.outputs.mode != 'skip'
+        shell: pwsh
+        run: |
+          $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-pilot/RemoteDesk-2.4.1.zip" } else { 'dist/RemoteDesk-2.4.1.zip' }
+          python tests/smoke_release_bundle.py $zip --version 2.4.1
+      - name: Aggiorna una copia portabile 2.4.0 in un percorso personalizzato
+        if: steps.mode.outputs.mode != 'skip'
+        shell: pwsh
+        run: |
+          $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-pilot/RemoteDesk-2.4.1.zip" } else { 'dist/RemoteDesk-2.4.1.zip' }
+          $manifestArgs = @()
+          if ('${{ steps.mode.outputs.mode }}' -eq 'verify') { $manifestArgs = @('--candidate-manifest', 'dist/latest.json') }
+          python tests/smoke_portable_custom.py --legacy-zip dist/RemoteDesk-2.4.0.zip --candidate-zip $zip --version 2.4.1 @manifestArgs
+      - name: Aggiorna la copia portabile 2.3.2 con una seconda istanza su loopback
+        if: steps.mode.outputs.mode != 'skip'
+        shell: pwsh
+        run: |
+          $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-pilot/RemoteDesk-2.4.1.zip" } else { 'dist/RemoteDesk-2.4.1.zip' }
+          $manifestArgs = @()
+          if ('${{ steps.mode.outputs.mode }}' -eq 'verify') { $manifestArgs = @('--candidate-manifest', 'dist/latest.json') }
+          python tests/smoke_portable_custom.py --from-version 2.3.2 --legacy-zip dist/RemoteDesk-2.3.2.zip --candidate-zip $zip --version 2.4.1 --reference-zip dist/RemoteDesk-2.4.0.zip @manifestArgs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: steps.mode.outputs.mode == 'build'
+        with:
+          name: remotedesk-windows-2.4.1-pilot
+          path: ${{ runner.temp }}/remotedesk-pilot
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  stage:
+    needs: package
+    if: needs.package.outputs.mode == 'build' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: remotedesk-windows-2.4.1-pilot
+          path: ${{ runner.temp }}/rd-pilot
+      - name: Prepara i download su un ramo dedicato
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/rd-pilot"
+          package=RemoteDesk-2.4.1.zip
+          sha=$(sha256sum "$package" | cut -d' ' -f1)
+          size=$(stat -c '%s' "$package")
+          test "$(cat SHA256SUMS)" = "$sha  $package"
+          jq -e --arg sha "$sha" --argjson size "$size" '
+            .version == "2.4.1" and .file == "RemoteDesk-2.4.1.zip" and
+            .url == "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.4.1.zip" and
+            .sha256 == $sha and .size == $size and (has("sig") | not)
+          ' latest.unsigned.json >/dev/null
+          destination="$GITHUB_WORKSPACE/pilot/2.4.1"
+          mkdir -p "$GITHUB_WORKSPACE/pilot"
+          mkdir "$destination"
+          cp "$package" "$destination/$package"
+          cp SHA256SUMS "$destination/$package.sha256"
+          cp latest.unsigned.json "$destination/latest.unsigned.json"
+          cd "$GITHUB_WORKSPACE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --force -- "pilot/2.4.1/$package" "pilot/2.4.1/$package.sha256" "pilot/2.4.1/latest.unsigned.json"
+          git cat-file blob ":pilot/2.4.1/$package.sha256" | cmp - "$RUNNER_TEMP/rd-pilot/SHA256SUMS"
+          git cat-file blob ":pilot/2.4.1/latest.unsigned.json" | cmp - "$RUNNER_TEMP/rd-pilot/latest.unsigned.json"
+          test "$(git cat-file blob ":pilot/2.4.1/$package" | sha256sum | cut -d' ' -f1)" = "$sha"
+          git commit -m 'Stage tested portable pilot 2.4.1'
+          ref="pilot/windows-2.4.1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git push --force-with-lease="refs/heads/$ref:" origin "HEAD:refs/heads/$ref"
+          commit=$(git rev-parse HEAD)
+          base="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$commit/pilot/2.4.1"
+          echo "RD_STAGE_REF=$ref"
+          echo "RD_STAGE_COMMIT=$commit"
+          {
+            printf 'Sorgenti %s\n\n' "$GITHUB_SHA"
+            echo "[Scarica $package]($base/$package) · [Impronta SHA-256]($base/$package.sha256) · [Manifesto da firmare]($base/latest.unsigned.json)"
+            echo
+            printf 'SHA-256 %s\n' "$sha"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: package
+    if: needs.package.outputs.mode == 'verify' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    concurrency:
+      group: remotedesk-release-2.4.1
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Download the public stable feed and compare its ZIP with the verified package
+        shell: bash
+        run: |
+          set -euo pipefail
+          feed='https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist'
+          published="$RUNNER_TEMP/rd-public.json"
+          for attempt in {1..15}; do
+            status=$(curl -sS --proto '=https' --max-time 15 -H 'Cache-Control: no-cache' -o "$published" -w '%{http_code}' "$feed/latest.json" || true)
+            if [[ "$status" == 200 ]] && cmp -s "$published" dist/latest.json; then break; fi
+            sleep 15
+          done
+          test "$status" = 200
+          cmp "$published" dist/latest.json
+          status=$(curl -fsS --proto '=https' --retry 3 --max-time 90 -o "$RUNNER_TEMP/rd-public.zip" -w '%{http_code}' "$feed/RemoteDesk-2.4.1.zip")
+          test "$status" = 200
+          cmp "$RUNNER_TEMP/rd-public.zip" dist/RemoteDesk-2.4.1.zip
+          echo 'The public stable feed and package both returned HTTP 200 without a redirect and match the release byte for byte.'
+      - name: Publish the signed distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=v2.4.1
+          package=RemoteDesk-2.4.1.zip
+          release_sha=$(git log -1 --format=%H -- dist/latest.json "dist/$package" "dist/$package.sha256")
+          test -n "$release_sha"
+          info="$RUNNER_TEMP/rd-release.json"
+          check_tag() {
+            local refs peeled direct
+            refs=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}") || return 1
+            if [[ -z "$refs" ]]; then [[ "$1" == optional ]]; return; fi
+            peeled=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<<"$refs")
+            direct=$(awk -v ref="refs/tags/$tag" '$2 == ref {print $1}' <<<"$refs")
+            [[ "${peeled:-$direct}" == "$release_sha" ]]
+          }
+          check_tag optional
+          if ! gh release view "$tag" --json tagName,isDraft,isPrerelease,targetCommitish,assets > "$info"; then
+            jq -r .notes dist/latest.json > "$RUNNER_TEMP/rd-release-notes"
+            gh release create "$tag" --draft --target "$release_sha" --title 'RemoteDesk 2.4.1' --notes-file "$RUNNER_TEMP/rd-release-notes" "dist/$package" "dist/$package.sha256" dist/latest.json
+            gh release view "$tag" --json tagName,isDraft,isPrerelease,targetCommitish,assets > "$info"
+          fi
+          jq -e --arg tag "$tag" --arg sha "$release_sha" --arg file "$package" '
+            .tagName == $tag and (.isPrerelease | not) and
+            (if .isDraft then .targetCommitish == $sha else true end) and
+            ([.assets[].name] | sort) == ([$file, ($file + ".sha256"), "latest.json"] | sort)
+          ' "$info" >/dev/null
+          if jq -e '.isDraft | not' "$info" >/dev/null; then check_tag required; fi
+          downloads=$(mktemp -d "$RUNNER_TEMP/rd-release-assets.XXXXXX")
+          gh release download "$tag" --dir "$downloads"
+          for file in "$package" "$package.sha256" latest.json; do cmp "$downloads/$file" "dist/$file"; done
+          if jq -e .isDraft "$info" >/dev/null; then
+            check_tag optional
+            gh release edit "$tag" --draft=false --latest
+          fi
+          check_tag required
