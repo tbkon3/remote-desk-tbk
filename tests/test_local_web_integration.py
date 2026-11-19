@@ -3,6 +3,7 @@ import asyncio
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from collections import defaultdict
 from pathlib import Path
@@ -85,10 +86,12 @@ class WebAuthIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(json.loads(response.text)["update_target"], {"mode":mode, "path":location})
             self.assertEqual((await self.dispatch("GET", "/api/update/local", desktop)).status, 403)
+            marker.reset_mock()
             public = await self.dispatch("GET", "/api/public", desktop)
             self.assertEqual(public.status, 200, public.text)
             data = json.loads(public.text)
             self.assertNotIn("update_target", data)
+            self.assertNotIn("service_setup", data)
             self.assertNotIn("error", data["update"])
             self.assertEqual(data["service"]["installed"], not portable)
             if portable:
@@ -123,6 +126,34 @@ class WebAuthIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual("update_target" in json.loads(response.text), visible)
             self.assertEqual("local_update" in json.loads(response.text), visible)
+
+    async def test_portable_can_request_install_only_for_a_prepared_unregistered_service(self):
+        owner, desktop = await self.browser("owner"), await self.browser("desktop")
+        self.agent.portable, self.agent.service_mode, self.agent.nets = True, False, {}
+        setup_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        paths = tuple(setup_dir / name for name in ("pythonw.exe", "remotedesk.py", "RemoteDesk.exe"))
+        registered = self.enterContext(patch("rd.web.service_installed", return_value=False))
+        self.enterContext(patch("rd.web.WIN", True))
+        self.enterContext(patch("rd.web.INSTALL_DIR", str(setup_dir)))
+        self.enterContext(patch("rd.web.svc.installed_paths", return_value=paths))
+        elevate = self.enterContext(patch("rd.web.svc.elevate", return_value=True))
+        install = "/api/service"
+        body = {"action": "install", "path": "user-supplied-location"}
+        self.assertEqual((await self.dispatch("POST", install, desktop, body)).status, 403)
+        result = await self.dispatch("POST", install, owner, body)
+        self.assertEqual(result.status, 409)
+        self.assertIn(str(setup_dir), json.loads(result.text)["error"])
+        for path in paths:
+            path.touch()
+        registered.return_value = True
+        self.assertEqual((await self.dispatch("POST", install, owner, body)).status, 409)
+        self.assertEqual((await self.dispatch("POST", install, owner, {"action": "uninstall"})).status, 403)
+        elevate.assert_not_called()
+        registered.return_value = False
+        result = await self.dispatch("POST", install, owner, body)
+        self.assertEqual(result.status, 200)
+        self.assertEqual(json.loads(result.text), {"ok": True})
+        elevate.assert_called_once_with("--install-service")
 
     async def test_real_logout_drops_grants_and_clears_browser_header(self):
         headers = await self.browser("desktop")

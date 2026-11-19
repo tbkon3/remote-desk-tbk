@@ -134,8 +134,15 @@ def make_app(agent, port, on_quit):
             return {"mode": "service", "path": INSTALL_DIR}
         return {"mode": "portable" if getattr(agent, "portable", False) else "user", "path": ROOT_DIR}
 
+    def service_setup():
+        if not WIN or agent.service_mode:
+            return None
+        return {"path": INSTALL_DIR, "registered": service_installed(),
+                "ready": all(os.path.isfile(path) for path in svc.installed_paths())}
+
     def local_update_status():
-        return {"update_target": update_target(), "local_update": agent.updater.status()}
+        return {"update_target": update_target(), "local_update": agent.updater.status(),
+                "service_setup": service_setup()}
 
     async def update_local(req):
         need_local_admin(req)
@@ -503,18 +510,33 @@ def make_app(agent, port, on_quit):
         W.autostart_set(svc.launch_command("--minimized") if b.get("on") else None)
         return web.json_response({"ok": True})
 
+    service_request = asyncio.Lock()
+
     async def service(req):
         need_local_admin(req)
-        if getattr(agent, "portable", False):
-            return web.json_response({"error": "Gestione del servizio Windows non disponibile per questa copia portabile."}, status=403)
-        b = await req.json()
+        body = await req.json()
+        action = body.get("action") if isinstance(body, dict) else None
+        if getattr(agent, "portable", False) and action != "install":
+            return web.json_response({"error": "Gestisci il servizio già registrato dalla sua icona."}, status=403)
         if not WIN:
-            return err("La modalita' servizio e' disponibile solo su Windows")
+            return err("La modalità servizio è disponibile solo su Windows")
         if agent.service_mode:
-            return err("Il servizio si rimuove dal menu dell'icona di RemoteDesk (tasto destro > Rimuovi servizio): "
-                       "Windows chiedera' le credenziali di amministratore")
-        ok = svc.elevate("--install-service" if b.get("action") == "install" else "--uninstall-service",
-                         user_data=agent.data_dir)
+            return err("Per rimuovere il servizio, usa il menu dell'icona RemoteDesk.")
+        if action not in ("install", "uninstall"):
+            return web.json_response({"error": "Operazione servizio non valida"}, status=400)
+        if service_request.locked():
+            return web.json_response({"error": "Una richiesta per il servizio è già in corso."}, status=409)
+        async with service_request:
+            if action == "install":
+                setup = service_setup()
+                if setup["registered"]:
+                    return web.json_response({"error": "Il servizio è già registrato. Apri la console dalla sua icona."},
+                                             status=409)
+                if not setup["ready"]:
+                    return web.json_response({"error": "Estrai il pacchetto ufficiale verificato in " + setup["path"]},
+                                             status=409)
+            flag = "--install-service" if action == "install" else "--uninstall-service"
+            ok = await asyncio.to_thread(svc.elevate, flag)
         return web.json_response({"ok": True} if ok else {"error": "Elevazione annullata o non riuscita"})
 
     async def user_save(req):
