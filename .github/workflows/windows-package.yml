@@ -58,6 +58,15 @@ jobs:
         run: |
           $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-package/RemoteDesk-2.4.0.zip" } else { 'dist/RemoteDesk-2.4.0.zip' }
           python tests/smoke_release_bundle.py $zip
+      - name: Upgrade the 2.3.2 portable installation and verify the restarted agent
+        if: steps.mode.outputs.mode != 'complete'
+        shell: pwsh
+        run: |
+          if ('${{ steps.mode.outputs.mode }}' -eq 'build') {
+            python tests/smoke_portable_upgrade.py --legacy-zip dist/RemoteDesk-2.3.2.zip --candidate-zip "$env:RUNNER_TEMP/remotedesk-package/RemoteDesk-2.4.0.zip"
+          } else {
+            python tests/smoke_portable_upgrade.py --legacy-zip dist/RemoteDesk-2.3.2.zip --candidate-zip dist/RemoteDesk-2.4.0.zip --candidate-manifest dist/latest.json
+          }
       - name: Migrate the historical Windows scheduled task on the temporary runner
         if: steps.mode.outputs.mode != 'complete'
         shell: pwsh
