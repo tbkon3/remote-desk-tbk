@@ -2,7 +2,7 @@
 
 RemoteDesk collega due PC registrati nella stessa rete di assistenza. Dalla rubrica il tecnico può vedere o controllare il desktop, trasferire file in una cartella condivisa e consultare l'inventario Windows. Ogni operazione richiede i permessi previsti sul PC assistito. Il pacchetto portabile include Python per Windows a 64 bit.
 
-[Scarica RemoteDesk 2.4.0 per Windows](https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.4.0.zip) · [Scarica l'impronta SHA-256](https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.4.0.zip.sha256)
+[Scarica RemoteDesk 2.4.1 per Windows](https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.4.1.zip) · [Scarica l'impronta SHA-256](https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.4.1.zip.sha256)
 
 ## Verifica e prima installazione
 
@@ -12,7 +12,7 @@ RemoteDesk collega due PC registrati nella stessa rete di assistenza. Dalla rubr
 4. Sul secondo PC scegli **Entra in una rete esistente**. Indica nome, chiave e credenziali di un amministratore della stessa rete. Durante la registrazione deve essere raggiungibile almeno un altro PC già iscritto. Riapri la console di ogni PC dall'icona locale.
 
 ```powershell
-$zip = '.\RemoteDesk-2.4.0.zip'
+$zip = '.\RemoteDesk-2.4.1.zip'
 $atteso = ((Get-Content -LiteralPath "$zip.sha256" -Raw).Trim() -split '\s+')[0]
 if ($atteso -notmatch '^[0-9a-fA-F]{64}$') { throw 'Impronta pubblicata non valida' }
 if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $atteso) { throw 'SHA-256 diverso. Interrompere.' }

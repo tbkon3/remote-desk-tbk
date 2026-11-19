@@ -350,6 +350,36 @@ async def browser_state(endpoint, url, port, target_root, name, version):
             raise RuntimeError("Incorrect rendered portable console. Origin/path: " + repr([safe_page(t["url"]) for t in targets]))
 
 
+def browser_endpoint(active, profile, timeout=45):
+    import errno
+    marker = profile / "DevToolsActivePort"
+    last_status = "file not published"
+
+    def read():
+        nonlocal last_status
+        try:
+            lines = marker.read_text(encoding="ascii").splitlines()
+        except PermissionError as exc:
+            # Chromium can hold this newly created file without read sharing while
+            # publishing its endpoint. Python's CRT may report EACCES without winerror.
+            if exc.errno != errno.EACCES or getattr(exc, "winerror", None) not in (None, 5, 32, 33):
+                raise
+            last_status = f"read denied (errno={exc.errno}, winerror={getattr(exc, 'winerror', None)})"
+            return None
+        if len(lines) < 2:
+            last_status = "file present, endpoint not yet complete"
+            return None
+        port, debugger_path = lines[:2]
+        require(port.isascii() and port.isdecimal() and 0 < int(port) < 65536
+                and debugger_path.startswith("/devtools/browser/"), "Invalid Chromium debugger endpoint")
+        return int(port)
+
+    try:
+        return until(active, read, "Chromium debugger endpoint", timeout=timeout)
+    except TimeoutError as exc:
+        raise TimeoutError(f"Chromium did not publish a readable DevToolsActivePort in {timeout}s: {last_status}") from exc
+
+
 @contextmanager
 def console_browser(data, env):
     from rd import agent
@@ -362,8 +392,7 @@ def console_browser(data, env):
             "--proxy-server=http://127.0.0.1:1", "--proxy-bypass-list=127.0.0.1;localhost",
             "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", "about:blank"]
     with private_launcher(Path(browser), args, env) as active:
-        endpoint = until(active, lambda: (profile / "DevToolsActivePort").read_text().splitlines(), "Chromium socket")[0]
-        yield int(endpoint)
+        yield browser_endpoint(active, profile)
 
 
 def capture_old(target, staged, data, port, version, original_version):
