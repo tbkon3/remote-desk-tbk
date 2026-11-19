@@ -1,0 +1,11 @@
+{
+  "version": "2.4.1",
+  "file": "RemoteDesk-2.4.1.zip",
+  "url": "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.4.1.zip",
+  "size": 53554442,
+  "sha256": "528afafd869b3c4f08a65db99f1a3007850ca7b08820436f1cab2981bbc6bff8",
+  "issued": 1795063758,
+  "expires": 1797655758,
+  "date": "2026-11-19",
+  "notes": "La copia portabile si aggiorna nella cartella da cui è stata avviata. Chiudi le sessioni prima del riavvio. Se parti dalla 2.3.2, aggiorna entrambi i PC e apri una nuova sessione dalla console della nuova versione."
+}
