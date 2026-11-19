@@ -2,7 +2,8 @@
 (per test/uso secondario) Linux X11 / macOS."""
 import logging
 import os
-import queue
+from collections import deque
+from contextlib import contextmanager, nullcontext
 import shutil
 import subprocess
 import threading
@@ -24,6 +25,30 @@ def _new_mss():
 
 
 ALL = -1  # indice speciale: tutti gli schermi in un'unica immagine
+
+
+def _desktop_ok(service):
+    try:
+        return not WIN or W.default_desktop_active(service)
+    except OSError:
+        return False
+
+
+class _OtherLogon(PermissionError):
+    pass
+
+
+@contextmanager
+def _user_context(service, expected=None):
+    if WIN and service:
+        from .win_identity import logon_id
+        session = W.process_session()
+        with W.as_session_user(session) as user:
+            if not expected or (session, logon_id(user.tok)) != expected:
+                raise _OtherLogon("Sessione Windows cambiata o non verificata")
+            yield
+    else:
+        yield
 
 
 def layout(sct):
@@ -62,10 +87,11 @@ def primary_index(mons):
 class Capturer:
     """Da usare sempre dallo stesso thread (mss e i desktop Windows sono legati al thread)."""
 
-    def __init__(self):
+    def __init__(self, service_mode=False, expected_logon=None):
         self.sct = None
         self.born = 0
-        self.desk = W.DesktopFollower() if WIN else None
+        self.service_mode = service_mode
+        self.expected_logon = expected_logon
         self.last = None   # ultimo array catturato
 
     def _reset(self):
@@ -75,6 +101,7 @@ class Capturer:
         except Exception:
             pass
         self.sct = None
+        self.last = None
 
     def monitors(self):
         if self.sct is None or time.time() - self.born > 10:
@@ -84,17 +111,22 @@ class Capturer:
         return layout(self.sct)
 
     def grab(self, mon_index):
-        """Ritorna (array BGRA, changed) oppure (None, False) se il desktop non e' leggibile."""
-        if self.desk and self.desk.sync():
-            self._reset()
+        """Return (None, True) to immediately replace an inaccessible desktop with black."""
         try:
-            mon = pick(self.monitors(), mon_index)
-            img = self.sct.grab({k: mon[k] for k in ("left", "top", "width", "height")})
+            with _user_context(self.service_mode, self.expected_logon):
+                if not _desktop_ok(self.service_mode):
+                    self._reset()
+                    return None, True
+                mon = pick(self.monitors(), mon_index)
+                img = self.sct.grab({k: mon[k] for k in ("left", "top", "width", "height")})
+                raw = img.bgra
+                if not _desktop_ok(self.service_mode):
+                    self._reset()
+                    return None, True
         except Exception as e:
             log.debug("grab fallita: %s", e)
             self._reset()
-            return None, False
-        raw = img.bgra
+            return None, True
         arr = (raw, img.width, img.height)
         changed = self.last is None or self.last[1:] != arr[1:] or self.last[0] != raw
         self.last = arr
@@ -122,26 +154,89 @@ def black_frame(w=1280, h=720):
 
 
 def list_monitors():
+    if not _desktop_ok(False):
+        return []
     with _new_mss() as s:
         return layout(s)
 
 
 # =========================================================================== input
 class Injector:
-    """Thread dedicato: riceve eventi (dict) e li inietta. Su Windows segue il desktop attivo,
-    cosi' funziona anche su UAC e schermata di accesso (in modalita' servizio)."""
+    """Dispatch on one thread. Consent barriers invalidate pending input before showing a dialog."""
 
-    def __init__(self):
-        self.q = queue.Queue()
+    def __init__(self, service_mode=False):
+        self.service_mode = service_mode
+        self.q = deque()
+        self._work = threading.Condition()
+        self._pauses = 0
+        self._epoch = 0
+        self._barriers = []
+        self._reset_requested = False
+        self._release_pending = False
+        self._held_logon = None
+        self._stopping = False
         self.mods = set()
         self.buttons = set()
         self.blocked = False
         self._mons = []
         self._mons_t = 0
-        threading.Thread(target=self._run, daemon=True, name="injector").start()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="injector")
+        self._thread.start()
 
-    def put(self, m):
-        self.q.put(m)
+    def put(self, m, expected_logon=None, authorized=None):
+        with self._work:
+            if self._stopping or self._pauses or not _desktop_ok(self.service_mode):
+                self._epoch += 1
+                self.q.clear()
+                return
+            if len(self.q) >= 256:
+                self.q.clear()
+                self._epoch += 1
+                self._reset_requested = True
+            self.q.append((m, expected_logon, authorized))
+            self._work.notify()
+
+    def pause_and_drain(self):
+        completed = threading.Event()
+        result = []
+        with self._work:
+            self._pauses += 1
+            self._epoch += 1
+            self.q.clear()
+            self._barriers.append((completed, result))
+            self._work.notify()
+        if not completed.wait(2) or result != [True]:
+            raise PermissionError("Impossibile sospendere in sicurezza il controllo remoto")
+
+    def resume(self):
+        with self._work:
+            self._pauses = max(0, self._pauses - 1)
+
+    def close(self):
+        with self._work:
+            self._stopping = True
+            self._epoch += 1
+            self.q.clear()
+            self._work.notify()
+        self._thread.join(2)
+
+    def _clear_input(self, allowed):
+        # Windows only lets the blocking thread unblock input. Never synthesize key-ups
+        # on an inaccessible desktop or while the interactive user token is unavailable.
+        if WIN and self.blocked:
+            if not W.block_input(False):
+                raise OSError("Impossibile sbloccare l'input locale")
+            self.blocked = False
+        self._release_pending = bool(self.mods or self.buttons)
+        if allowed and self._release_pending:
+            guard = W.input_guard(lambda: _desktop_ok(self.service_mode)) if WIN else nullcontext()
+            try:
+                with _user_context(self.service_mode, self._held_logon), guard:
+                    self._release_all(strict=True)
+            except _OtherLogon:
+                self.buttons.clear()
+                self.mods.clear()
+            self._release_pending = False
 
     def _monitors(self):
         if time.time() - self._mons_t > 5:
@@ -153,19 +248,56 @@ class Injector:
         return self._mons
 
     def _run(self):
-        desk = W.DesktopFollower() if WIN else None
         if not WIN:
             self._init_pynput()
-        last_sync = 0
         while True:
-            m = self.q.get()
-            if desk and time.time() - last_sync > 0.25:
-                desk.sync()
-                last_sync = time.time()
+            with self._work:
+                self._work.wait_for(lambda: self._barriers or self.q or self._stopping or self._reset_requested, timeout=0.1)
+                barriers, self._barriers = self._barriers, []
+                reset, self._reset_requested = self._reset_requested, False
+                m, expected, authorized = self.q.popleft() if self.q and not self._pauses and not reset else (None, None, None)
+                epoch = self._epoch
+                stopping = self._stopping
+            if stopping:
+                try:
+                    self._clear_input(_desktop_ok(self.service_mode))
+                except OSError:
+                    log.debug("Chiudo il thread di input senza inviare comandi al desktop")
+                finally:
+                    for completed, _ in barriers:
+                        completed.set()
+                return
+            if not barriers and not reset and m is None and not (self.blocked or self.mods or self.buttons):
+                continue
             try:
-                self._handle(m)
+                allowed = _desktop_ok(self.service_mode)
+                if barriers or reset or not allowed or self._release_pending:
+                    with self._work:
+                        self._epoch += 1
+                        self.q.clear()
+                    self._clear_input(allowed)
+                elif m is not None:
+                    def can_send():
+                        return (self._epoch == epoch and not self._pauses and (authorized is None or authorized())
+                                and _desktop_ok(self.service_mode))
+                    with _user_context(self.service_mode, expected), (W.input_guard(can_send) if WIN else nullcontext()):
+                        if not can_send():
+                            raise PermissionError("Desktop interattivo non disponibile")
+                        self._held_logon = expected
+                        self._handle(m)
+                for _, result in barriers:
+                    result.append(allowed)
             except Exception as e:
-                log.debug("input %s: %s", m.get("t"), e)
+                with self._work:
+                    self.q.clear()
+                try:
+                    self._clear_input(_desktop_ok(self.service_mode))
+                except OSError:
+                    pass
+                log.debug("input sospeso: %s", e)
+            finally:
+                for completed, _ in barriers:
+                    completed.set()
 
     # ------------------------------------------------------------------ helpers
     def _abs(self, m):
@@ -207,33 +339,43 @@ class Injector:
             extra = [k for k in want if k not in self.mods]
             for k in extra:
                 self.mod_key(k, True)
+                self.mods.add(k)
             self.tap(m.get("key", ""))
             for k in reversed(extra):
                 self.mod_key(k, False)
+                self.mods.discard(k)
         elif t == "combo":
             self.combo([str(x) for x in m.get("keys", [])])
         elif t == "rel":
             self._release_all()
         elif t == "_block" and WIN:
-            self.blocked = bool(m.get("on"))
-            W.block_input(self.blocked)
+            on = bool(m.get("on"))
+            if W.block_input(on):
+                self.blocked = on
 
     def release_all(self):
-        self.q.put({"t": "rel"})
+        with self._work:
+            self.q.clear()
+            self._epoch += 1
+            self._reset_requested = True
+            self._work.notify()
 
-    def _release_all(self):
+    def _release_all(self, strict=False):
+        failed = False
         for b in list(self.buttons):
             try:
                 self.button(b, False)
+                self.buttons.discard(b)
             except Exception:
-                pass
-        self.buttons.clear()
+                failed = True
         for k in list(self.mods):
             try:
                 self.mod_key(k, False)
+                self.mods.discard(k)
             except Exception:
-                pass
-        self.mods.clear()
+                failed = True
+        if failed and strict:
+            raise PermissionError("Impossibile rilasciare i comandi di input")
 
     # ------------------------------------------------------------------ backend Windows
     if WIN:
@@ -267,18 +409,17 @@ class Injector:
                 if len(key) == 1:
                     W.type_text(key)
                 return
-            W.key_vk(vk, True)
-            W.key_vk(vk, False)
+            W.key_combo([vk])
 
         def combo(self, keys):
             vks = [v for v in (self._vk(k) for k in keys) if v]
-            for v in vks:
-                W.key_vk(v, True)
-            for v in reversed(vks):
-                W.key_vk(v, False)
+            W.key_combo(vks)
 
-        def set_block(self, on):
-            self.q.put({"t": "_block", "on": on})
+        def set_block(self, on, expected_logon=None, authorized=None):
+            if on:
+                self.put({"t": "_block", "on": True}, expected_logon, authorized)
+            else:
+                self.release_all()
 
     # ------------------------------------------------------------------ backend pynput (Linux/mac)
     else:
@@ -340,7 +481,7 @@ class Injector:
             for k in reversed(ks):
                 self._kb.release(k)
 
-        def set_block(self, on):
+        def set_block(self, on, expected_logon=None, authorized=None):
             pass
 
 

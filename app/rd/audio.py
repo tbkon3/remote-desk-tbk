@@ -179,7 +179,7 @@ class SystemAudioTrack(MediaStreamTrack):
                 await asyncio.sleep(wait)
             elif wait < -1:
                 self.start = time.time() - self.pts / RATE
-        data = (SOURCE.read(self) if self.active else None) or SILENCE
+        data = (SOURCE.read(self) if self.active and self.s.can_view() and "audio" in self.s.rights else None) or SILENCE
         f = av.AudioFrame(format="s16", layout="stereo", samples=SAMPLES)
         f.planes[0].update(data)
         f.sample_rate = RATE

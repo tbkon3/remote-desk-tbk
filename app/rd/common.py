@@ -15,7 +15,7 @@ import zlib
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-VERSION = "2.3.2"
+VERSION = "2.4.0"
 WIN = sys.platform == "win32"
 DEFAULT_PORT = 47800
 
@@ -26,19 +26,22 @@ WEB_DIR = os.path.join(APP_DIR, "web")
 log = logging.getLogger("rd")
 
 
-def _writable(d):
-    try:
-        os.makedirs(d, exist_ok=True)
-        import tempfile
-        with tempfile.NamedTemporaryFile(dir=d, delete=True):
-            pass
-        return True
-    except Exception:
-        return False
+def known_folder(csidl):
+    import ctypes
+    from pathlib import PureWindowsPath
+    path = ctypes.create_unicode_buffer(260)
+    shell = ctypes.WinDLL("shell32", winmode=0x800)  # LOAD_LIBRARY_SEARCH_SYSTEM32
+    if shell.SHGetFolderPathW(None, csidl, None, 0, path) != 0 or not path.value:
+        raise OSError("Cartella di sistema Windows non disponibile")
+    anchor = PureWindowsPath(path.value).anchor
+    if (len(anchor) != 3 or anchor[1:] != ":\\" or not anchor[0].isascii() or not anchor[0].isalpha()
+            or ctypes.windll.kernel32.GetDriveTypeW(anchor) != 3):  # DRIVE_FIXED
+        raise OSError("I dati e i programmi del servizio richiedono un volume locale fisso")
+    return path.value
 
 
-PROGRAM_DATA = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "RemoteDesk", "data")
-INSTALL_DIR = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "RemoteDesk")
+PROGRAM_DATA = os.path.join(known_folder(0x23) if WIN else "/var/lib", "RemoteDesk", "data")
+INSTALL_DIR = os.path.join(known_folder(0x26) if WIN else "/opt", "RemoteDesk")
 IDENTITY_FILES = ("config.json", "config.json.bak", "machine.key", "audit.jsonl")
 
 
@@ -55,51 +58,156 @@ def user_data_dir():
                     shutil.copy2(os.path.join(old, f), os.path.join(d, f))
         os.makedirs(d, exist_ok=True)
         return d
-    d = os.path.join(ROOT_DIR, "data")
-    if _writable(d):
-        return d
-    d = os.path.join(os.path.expanduser("~/.local/share"), "RemoteDesk", "data")
-    os.makedirs(d, exist_ok=True)
+    d = os.path.expanduser("~/.local/share/RemoteDesk/data")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
     return d
 
 
 def pick_data_dir(override=None, service=False):
-    if override:
-        os.makedirs(override, exist_ok=True)
-        return override
-    if service and WIN:
-        os.makedirs(PROGRAM_DATA, exist_ok=True)
+    if service:
+        if not WIN:
+            raise ValueError("Modalita' servizio disponibile solo su Windows")
+        if override and os.path.normcase(os.path.abspath(override)) != os.path.normcase(PROGRAM_DATA):
+            raise ValueError("Percorso dati servizio non valido")
+        secure_dir(PROGRAM_DATA)
         return PROGRAM_DATA
+    if override:
+        os.makedirs(override, mode=0o700, exist_ok=True)
+        return override
     return user_data_dir()
 
 
-def secure_dir(d, include_user=False):
-    """Windows: cartella leggibile solo da SYSTEM e Amministratori (piu' l'utente, se richiesto)."""
+def secure_dir(d):
     if not WIN:
-        try:
-            os.chmod(d, 0o700)
-        except OSError:
-            pass
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        os.chmod(d, 0o700)
         return
+    from pathlib import Path
     import subprocess
-    args = ["icacls", d, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "/grant:r", "*S-1-5-32-544:(OI)(CI)F"]
-    if include_user:
-        args += ["/grant:r", f"{os.environ.get('USERNAME', '')}:(OI)(CI)F"]
-    subprocess.run(args, capture_output=True, creationflags=0x08000000)
+    from .updater import system_tool
+    root = Path(PROGRAM_DATA).parent
+    target = Path(os.path.abspath(d))
+    if not target.is_relative_to(root) or target == root:
+        raise ValueError("Percorso servizio non valido")
+    shell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
+    system_dir = os.path.dirname(system_tool("whoami.exe"))
+    env = {"SystemRoot": os.path.dirname(system_dir), "PATH": system_dir,
+           "PSModulePath": os.path.join(os.path.dirname(shell), "Modules"), "RD_DATA_TARGET": str(target)}
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", DATA_DIRECTORY_POLICY],
+                            cwd=system_dir, env=env, timeout=120, capture_output=True, creationflags=0x08000000)
+    if result.returncode:
+        raise PermissionError("Verificare proprietario, DACL e collegamenti della cartella dati del servizio")
+    _private_files_single_link(target)
+
+
+def _private_files_single_link(target):
+    """Impedisce scritture indirette a un altro nome dello stesso file NTFS."""
+    import stat
+
+    def fail(error):
+        raise error
+
+    for parent, dirs, files in os.walk(target, onerror=fail, followlinks=False):
+        for name in dirs + files:
+            info = os.lstat(os.path.join(parent, name))
+            if getattr(info, "st_file_attributes", 0) & 0x400:
+                raise PermissionError("Collegamento nella cartella dati del servizio")
+            if not stat.S_ISDIR(info.st_mode) and info.st_nlink != 1:
+                raise PermissionError("File con piu' collegamenti nella cartella dati del servizio")
+
+
+WINDOWS_ANCESTOR_POLICY = r"""
+# Un diritto DeleteChild sul padre prevale sul permesso Delete del figlio.
+# Su ProgramData Windows consente normalmente di creare nuove sottocartelle.
+function Assert-TrustedAncestry([string]$p) {
+$systemOwners = @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+while ($p) {
+    $obj = Get-Item -LiteralPath $p -Force
+    if (!$obj.PSIsContainer -or ($obj.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'base' }
+    $sd = Get-Acl -LiteralPath $p
+    if ($systemOwners -notcontains $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'ancestor owner' }
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($sd.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $raw.DiscretionaryAcl) { throw 'ancestor DACL' }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+        if (([int]$ace.AceFlags -band 8) -or $ace.AceType -eq 'AccessDenied') { continue }
+        if ($ace.AceType -ne 'AccessAllowed') { throw 'ancestor ACE' }
+        if (($systemOwners -notcontains $ace.SecurityIdentifier.Value) -and ($ace.AccessMask -band 0x500D0150)) {
+            throw 'ancestor replacement'
+        }
+    }
+    $p = [IO.Path]::GetDirectoryName($p)
+}
+}
+"""
+
+
+WINDOWS_PRIVATE_DIRECTORY_POLICY = r"""
+function Inspect([string]$p) {
+    $obj = Get-Item -LiteralPath $p -Force
+    if ($obj.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'reparse point' }
+    $sd = Get-Acl -LiteralPath $p
+    if ($trusted -notcontains $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'owner' }
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($sd.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $raw.DiscretionaryAcl) { throw 'DACL' }
+    $inherits = @{}
+    foreach ($ace in $raw.DiscretionaryAcl) {
+        if ($ace.AceType -eq 'AccessDenied') { continue }
+        if ($ace.AceType -ne 'AccessAllowed' -or ($trusted -notcontains $ace.SecurityIdentifier.Value)) { throw 'ACE' }
+        if (([int]$ace.AceFlags -band 7) -eq 3 -and ($ace.AccessMask -band 0x1f01ff) -eq 0x1f01ff) {
+            $inherits[$ace.SecurityIdentifier.Value] = $true
+        }
+    }
+    if ($obj.PSIsContainer -and (!$inherits['S-1-5-18'] -or !$inherits['S-1-5-32-544'])) { throw 'inheritance' }
+}
+"""
+
+
+DATA_DIRECTORY_POLICY = WINDOWS_ANCESTOR_POLICY + r"""
+$ErrorActionPreference = 'Stop'
+$common = [Environment]::GetFolderPath('CommonApplicationData')
+$base = Join-Path $common 'RemoteDesk'
+$trusted = @('S-1-5-18','S-1-5-32-544')
+$acl = [Security.AccessControl.DirectorySecurity]::new()
+$acl.SetSecurityDescriptorSddlForm('O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+""" + WINDOWS_PRIVATE_DIRECTORY_POLICY + r"""
+Assert-TrustedAncestry $common
+$dirs = @()
+$p = $env:RD_DATA_TARGET
+while ($p -ne $base) {
+    $dirs = @($p) + $dirs
+    $p = [IO.Path]::GetDirectoryName($p)
+    if (!$p) { throw 'path' }
+}
+foreach ($p in (@($base) + $dirs)) {
+    if (![IO.Directory]::Exists($p)) { [void][IO.Directory]::CreateDirectory($p, $acl) }
+    Inspect $p
+}
+$queue = [Collections.Generic.Stack[string]]::new()
+$queue.Push($env:RD_DATA_TARGET)
+while ($queue.Count) {
+    $p = $queue.Pop()
+    Inspect $p
+    if ([IO.Directory]::Exists($p)) {
+        foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($p)) { $queue.Push($child) }
+    }
+}
+"""
 
 
 def write_private(path, data):
     """Scrittura atomica di un file riservato."""
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix=".rd-", dir=os.path.dirname(os.path.abspath(path)))
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp, path)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def service_installed(data_dir=None):
@@ -142,13 +250,18 @@ DEFAULTS = {
     "network": "",
     "password": "",
     "accept_incoming": True,   # questo PC puo' essere controllato
-    "ask_confirm": False,      # chiedi conferma all'utente prima di accettare
+    "ask_confirm": True,
     "allow_control": True,     # mouse/tastiera (altrimenti solo visualizzazione)
-    "allow_files": True,
-    "allow_clipboard": True,
+    "allow_files": False,
+    "allow_clipboard": False,
+    "allow_inventory": False,
+    "allow_power": False,
+    "allow_local_block": False,
+    "allow_sas": False,
+    "on_air": False,
     "signal": "https://ntfy.sh, mqtts://broker.emqx.io:8883, mqtts://broker.hivemq.com:8883",
     "stun": ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"],
-    "turn_url": "", "turn_user": "", "turn_pass": "",
+    "turn_url": "", "turn_user": "", "turn_pass": "", "turn_secret": "",
     "incoming_dir": "",        # vuoto = cartella Download dell'utente
     "known": {},               # rubrica: id -> ultime info viste
 }
@@ -160,6 +273,13 @@ class Config:
         self.lock = threading.Lock()
         self.data = dict(DEFAULTS)
         self._load()
+        if self.data.get("security_defaults") != 1:
+            # Previous versions persisted even implicit defaults. Require an
+            # explicit opt-in again on each endpoint after the schema upgrade.
+            self.data.update(ask_confirm=True, allow_files=False, allow_clipboard=False,
+                             allow_inventory=False, allow_power=False, allow_local_block=False,
+                             allow_sas=False, security_defaults=1)
+            self.save()
         if not self.data.get("id"):
             self.data["id"] = str(secrets.randbelow(900_000_000) + 100_000_000)
             self.save()
@@ -180,23 +300,35 @@ class Config:
         for attempt in range(5):
             try:
                 with open(self.path, encoding="utf-8") as f:
-                    self.data.update(json.load(f))
+                    values = json.load(f)
+                    if not isinstance(values, dict):
+                        raise ValueError("configurazione non valida")
+                    self.data.update(values)
                 return
             except FileNotFoundError:
+                if not os.path.isfile(self.path + ".bak"):
+                    return
+                self._recover()
                 return
             except ValueError as e:   # file rovinato: lo metto da parte e uso la copia di sicurezza
                 log.error("config rovinata (%s): uso la copia di sicurezza", e)
-                try:
-                    os.replace(self.path, self.path + f".corrupt-{int(_t.time())}")
-                    with open(self.path + ".bak", encoding="utf-8") as f:
-                        self.data.update(json.load(f))
-                except Exception:
-                    pass
+                self._recover()
                 return
             except OSError as e:      # file bloccato o senza permessi: non rigenero l'identita'
                 if attempt == 4:
                     raise RuntimeError(f"Impossibile leggere {self.path}: {e}")
                 _t.sleep(0.5)
+
+    def _recover(self):
+        try:
+            with open(self.path + ".bak", encoding="utf-8") as backup:
+                values = json.load(backup)
+            if not isinstance(values, dict) or not values.get("id"):
+                raise ValueError("identità assente")
+        except (ValueError, OSError) as exc:
+            raise RuntimeError("Impossibile recuperare la configurazione: verificare il backup") from exc
+        self.data.update(values)
+        write_private(self.path, json.dumps(values, indent=1))
 
     def reload(self):
         try:
@@ -306,6 +438,16 @@ class NetKey:
         return base64.urlsafe_b64encode(nonce + self.key.encrypt(nonce, comp, None)).decode().rstrip("=")
 
     def unseal(self, blob):
+        if not isinstance(blob, str) or len(blob) > 4 * 1024 * 1024:
+            raise ValueError("segnalazione troppo grande")
         blob = "".join(blob.split())
         data = base64.urlsafe_b64decode(blob + "=" * (-len(blob) % 4))
-        return json.loads(zlib.decompress(self.key.decrypt(data[:12], data[12:], None), -15))
+        return json.loads(bounded_decompress(self.key.decrypt(data[:12], data[12:], None), -15))
+
+
+def bounded_decompress(data, wbits, limit=8 * 1024 * 1024):
+    stream = zlib.decompressobj(wbits)
+    raw = stream.decompress(data, limit + 1)
+    if len(raw) > limit or not stream.eof or stream.unused_data:
+        raise ValueError("dati compressi non validi o troppo grandi")
+    return raw

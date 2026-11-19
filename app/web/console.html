@@ -2,6 +2,7 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
+<script src="/web/local-api.js"></script>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RemoteDesk</title>
 <link rel="icon" href="/web/icon.png">
@@ -159,9 +160,10 @@ table.t select{padding:3px 6px;font-size:12px}
       <label class="l">Nome utente</label><input id="uUser" autocomplete="off">
       <label class="l">Nome visualizzato</label><input id="uName">
       <label class="l">Password</label><input id="uPw" type="password" autocomplete="new-password" placeholder="min. 10 caratteri">
-      <label class="l">Amministratore</label><label class="chk"><input type="checkbox" id="uAdmin"> accesso completo alle macchine di questa rete e gestione utenti</label>
+      <label class="l">Amministratore</label><label class="chk"><input type="checkbox" id="uAdmin"> gestione utenti, controllo desktop e lettura file su tutte le macchine della rete</label>
     </div>
     <h3 style="margin-top:16px">Permessi per macchina</h3>
+    <p class="mut">I permessi aggiuntivi valgono sulle macchine selezionate. Per modificare la cartella condivisa serve anche la lettura file. Per rinominare o sovrascrivere servono sia scrittura sia eliminazione. Le azioni sul desktop richiedono il controllo e l'abilitazione sul PC assistito.</p>
     <div class="scroll"><table class="t" id="permTbl"></table></div>
     <div class="row" style="margin-top:12px"><button class="pri" id="uSave">Salva utente</button><button id="uCancel">Annulla</button></div>
   </div>
@@ -176,7 +178,7 @@ table.t select{padding:3px 6px;font-size:12px}
     <div class="bar">
       <select id="aNet" class="netsel"></select>
       <select id="aPeriod"><option value="1">Ultime 24 ore</option><option value="7" selected>Ultimi 7 giorni</option><option value="30">Ultimi 30 giorni</option><option value="90">Ultimi 90 giorni</option></select>
-      <select id="aKind"><option value="">Tutti gli eventi</option><option value="session">Sessioni</option><option value="file">File</option><option value="clip">Appunti</option><option value="fail">Login falliti / accessi negati</option></select>
+      <select id="aKind"><option value="">Tutti gli eventi</option><option value="session">Sessioni</option><option value="inventory">Inventario</option><option value="file">File</option><option value="clip">Appunti</option><option value="fail">Login falliti / accessi negati</option></select>
       <select id="aMach"><option value="">Tutte le macchine</option></select>
       <input id="aUser" placeholder="Filtra utente o testo..." style="max-width:200px">
       <button class="pri" id="aLoad">Carica</button>
@@ -196,9 +198,14 @@ table.t select{padding:3px 6px;font-size:12px}
       <label class="l">Connessioni in ingresso</label><label class="chk"><input type="checkbox" data-s="accept_incoming"> consenti agli utenti autorizzati di collegarsi</label>
       <label class="l">Conferma</label><label class="chk"><input type="checkbox" data-s="ask_confirm"> chiedi conferma a chi usa il PC (30 s, poi rifiuta)</label>
       <label class="l">Controllo</label><label class="chk"><input type="checkbox" data-s="allow_control"> consenti mouse e tastiera</label>
-      <label class="l">File</label><label class="chk"><input type="checkbox" data-s="allow_files"> consenti trasferimento file</label>
-      <label class="l">Appunti</label><label class="chk"><input type="checkbox" data-s="allow_clipboard"> consenti sincronizzazione appunti</label>
-      <label class="l">Cartella file ricevuti</label><input data-s="incoming_dir" id="inDir">
+      <label class="l">File</label><label class="chk"><input type="checkbox" data-s="allow_files"> consenti l'accesso alla cartella condivisa secondo i permessi dell'utente</label>
+      <label class="l">Appunti</label><label class="chk"><input type="checkbox" data-s="allow_clipboard"> consenti l'invio e la ricezione manuale di testo durante il controllo del PC</label>
+      <label class="l">Gestisci PC</label><label class="chk"><input type="checkbox" data-s="allow_inventory"> consenti la consultazione di condivisioni, unità mappate, servizi e applicazioni di Windows</label>
+      <label class="l">Alimentazione</label><label class="chk"><input type="checkbox" data-s="allow_power"> consenti le operazioni di alimentazione agli utenti autorizzati</label>
+      <label class="l">Input locale</label><label class="chk"><input type="checkbox" data-s="allow_local_block"> consenti il blocco di mouse e tastiera locali</label>
+      <label class="l">Ctrl+Alt+Canc</label><label class="chk"><input type="checkbox" data-s="allow_sas"> consenti l'invio della sequenza protetta su Windows</label>
+      <label class="l">Modalità in onda</label><label class="chk"><input type="checkbox" data-s="on_air"> sospendi alimentazione, blocco input e Ctrl+Alt+Canc durante la diretta</label>
+      <label class="l">Cartella condivisa per le sessioni File</label><input data-s="incoming_dir" id="inDir">
     </div>
   </div>
   <div class="card">
@@ -223,17 +230,29 @@ table.t select{padding:3px 6px;font-size:12px}
   <div class="card">
     <h3>Connessione</h3>
     <div class="form">
-      <label class="l">Server di segnalazione</label><input data-s="signal" title="Piu' server separati da virgola: https://... (ntfy) oppure mqtts://host:porta (MQTT)">
-      <label class="l">TURN url</label><input data-s="turn_url" placeholder="turn:host:3478 (facoltativo)">
+      <label class="l">Server di segnalazione</label><input data-s="signal" title="Separa i server con una virgola. HTTPS o WSS per ntfy, MQTTS per MQTT. HTTP e MQTT richiedono un indirizzo IP di loopback.">
+      <label class="l">Server STUN (separati da virgola)</label><input data-s="stun" placeholder="Vuoto per disattivare STUN">
+      <label class="l">Server TURN</label><input data-s="turn_url" placeholder="turns:turn.azienda.it:443?transport=tcp">
       <label class="l">TURN utente</label><input data-s="turn_user">
-      <label class="l">TURN password</label><input data-s="turn_pass" type="password">
+      <label class="l">Segreto coturn per credenziali temporanee</label><div><input data-s="turn_secret" type="password" autocomplete="new-password" id="turnSecret"> <button id="clearSecret" type="button">Rimuovi segreto</button></div>
+      <label class="l">TURN password</label><div><input data-s="turn_pass" type="password" autocomplete="new-password" id="turnPassword"> <button id="clearTurn" type="button">Rimuovi password</button></div>
     </div>
-    <p class="mut" style="font-size:13px">I server di segnalazione (separati da virgola) servono solo a far trovare le macchine tra loro: ricevono messaggi cifrati e vengono usati tutti insieme, cosi' se uno e' bloccato o al limite funzionano gli altri. Almeno uno deve essere in comune tra i PC. Predefiniti: ntfy.sh e i broker MQTT pubblici EMQX e HiveMQ. Lo schermo viaggia diretto tra i PC.</p>
+    <p class="mut" style="font-size:13px">I due PC devono avere almeno un relay di segnalazione in comune. WebRTC cerca un percorso diretto e può usare TURN se il firewall lo richiede. Con coturn il segreto condiviso genera credenziali di un'ora e ha priorità sulla password statica.</p>
   </div>
   <p class="mut" id="ver" style="text-align:center"></p>
 </section>
 
 </div></main>
+<dialog id="keyDialog" aria-labelledby="keyTitle">
+  <form id="keyForm">
+    <h3 id="keyTitle">Chiave della rete</h3>
+    <label id="keyPwLabel">Password del tuo utente di rete <input id="keyPw" type="password" autocomplete="current-password" required></label>
+    <input id="revealedKey" aria-label="Chiave della rete" readonly hidden>
+    <p id="keyError" role="status" class="mut"></p>
+    <button type="submit" id="revealKey">Mostra chiave</button>
+    <button type="button" id="keyClose">Chiudi</button>
+  </form>
+</dialog>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -243,16 +262,18 @@ const fid = id => esc(String(id ?? '').replace(/(\d{3})(?=\d)/g, '$1 '));
 function toast(t, ms=3500){ const d = document.createElement('div'); d.className='toast'; d.textContent=t; document.body.append(d); setTimeout(()=>d.remove(), ms) }
 async function post(p, b){ const r = await fetch(p, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b||{})}); return r.json() }
 function ago(t){ const s = Math.max(0, Date.now()/1000 - t); if (s < 90) return 'adesso'; if (s < 3600) return Math.round(s/60)+' min fa'; if (s < 86400) return Math.round(s/3600)+' ore fa'; return Math.round(s/86400)+' giorni fa' }
-const RLABEL = {view:'visione', control:'controllo', files:'file'};
-const MODES = {control:'controllo', view:'visione', files:'file'};
+const optionalRights = {inventory:'inventario', files_write:'scrittura file', files_delete:'eliminazione file',
+  power:'alimentazione', block_input:'blocco input', secure_desktop:'Ctrl+Alt+Canc'};
+const RLABEL = {view:'visione', control:'controllo', files:'lettura file', ...optionalRights};
+const MODES = {control:'controllo', view:'visione', files:'file', manage:'inventario'};
 
 function show(v){ view = v; document.querySelectorAll('section').forEach(s => s.classList.toggle('hide', s.id !== 'v-' + v)) }
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.tab; formMode = null; render() });
 
 function openSession(nid, id, name, mode='control'){
   const w = Math.min(screen.availWidth, 1400), h = Math.min(screen.availHeight, 900);
-  const url = `/session?net=${nid}&id=${encodeURIComponent(id)}&name=${encodeURIComponent(name||'')}&mode=${mode}`;
-  const win = window.open(url, 'rd_' + id + '_' + mode, `popup,width=${w},height=${h}`);
+  const url = (mode === 'manage' ? '/manage?' : '/session?') + new URLSearchParams({net:nid, id, name:name || '', mode});
+  const win = window.open(url, 'rd_' + nid + '_' + id + '_' + mode, `popup,width=${w},height=${h}`);
   if (win) win.focus(); else location.href = url;
 }
 
@@ -264,6 +285,7 @@ function renderHeader(){
   document.title = 'RemoteDesk - ' + P.me.fid;
   $('nav').classList.toggle('hide', !P.logged || !!formMode); $('bLogout').classList.toggle('hide', !P.logged);
   document.querySelectorAll('.adm').forEach(e => e.classList.toggle('hide', !P.admin_any));
+  document.querySelector('[data-tab="settings"]').classList.toggle('hide', !S?.can_configure);
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('act', b.dataset.tab === tab));
 }
 
@@ -286,13 +308,14 @@ function render(){
   if (!P.logged) {
     show('login');
     const sel = $('lgNet'), cur = sel.value;
-    sel.innerHTML = P.networks.map(n => `<option value="${n.nid}">${esc(n.name)}</option>`).join('');
+    sel.innerHTML = P.networks.map(n => `<option value="${esc(n.nid)}">${esc(n.name)}</option>`).join('');
     if (cur && P.networks.some(n => n.nid === cur)) sel.value = cur;
     $('pubIncoming').innerHTML = '<h3>Chi e\' collegato a questo PC</h3>' + incomingHtml();
     return;
   }
   if (!S) return;
   if (!P.admin_any && ['users', 'settings', 'audit'].includes(tab)) tab = 'machines';
+  if (tab === 'settings' && !S.can_configure) tab = 'machines';
   show(tab);
   const ss = P.sessions.filter(s => s.connected);
   $('inCount').textContent = ss.length; $('inCount').classList.toggle('hide', !ss.length);
@@ -312,7 +335,7 @@ function fillNetSelects(){
   const nets = Object.entries(S.admin_nets);
   document.querySelectorAll('.netsel').forEach(sel => {
     const cur = sel.value;
-    const html = nets.map(([nid, n]) => `<option value="${nid}">${esc(n.name)}</option>`).join('');
+    const html = nets.map(([nid, n]) => `<option value="${esc(nid)}">${esc(n.name)}</option>`).join('');
     if (sel.dataset.h !== html) { sel.innerHTML = html; sel.dataset.h = html; if (cur && S.admin_nets[cur]) sel.value = cur }
   });
 }
@@ -322,7 +345,7 @@ const vt = v => String(v || '').split(/\D+/).filter(Boolean).map(Number);
 function vless(a, b){ const x = vt(a), y = vt(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i]||0) !== (y[i]||0)) return (x[i]||0) < (y[i]||0) } return false }
 function renderUpdate(){
   const u = P.update || {}; const box = $('updBanner');
-  if (!P.admin_any || !u.supported || (!u.available && !['downloading','installing'].includes(u.state))) { box.classList.add('hide'); return }
+  if (!S?.can_configure || !u.supported || (!u.available && !['downloading','installing'].includes(u.state))) { box.classList.add('hide'); return }
   box.classList.remove('hide');
   if (u.state === 'downloading') box.innerHTML = `Download di RemoteDesk ${esc(u.latest)} in corso... ${u.progress | 0}%`;
   else if (u.state === 'installing') box.innerHTML = `Installazione di RemoteDesk ${esc(u.latest)}: il programma si riavvia da solo tra pochi secondi.`;
@@ -343,24 +366,28 @@ function renderMachines(){
     if (n.limited) html += `<div class="alertbox" style="max-width:none">Rete ${esc(n.name)}: <b>nessun server di segnalazione disponibile</b> (quota di messaggi esaurita sugli altri). Le macchine possono risultare offline anche se sono accese. Controlla in <i>Reti</i> lo stato dei server o aggiungine uno in Impostazioni &gt; Connessione.</div>`;
     if (!n.login) {
       html += `<div class="nethd">${dot} Rete ${esc(n.name)}</div>
-        <div class="inl" data-nid="${n.nid}"><span class="mut">Non hai effettuato l'accesso a questa rete:</span>
+        <div class="inl" data-nid="${esc(n.nid)}"><span class="mut">Non hai effettuato l'accesso a questa rete:</span>
         <input placeholder="utente" class="iu" autocomplete="username"><input type="password" placeholder="password" class="ip" autocomplete="current-password">
-        <button class="pri" data-login="${n.nid}">Accedi</button></div>`;
+        <button class="pri" data-login="${esc(n.nid)}">Accedi</button></div>`;
       continue;
     }
     const list = S.machines.filter(m => m.nid === n.nid && (!q || [m.name, m.id, m.user, m.os, m.net].join(' ').toLowerCase().includes(q)));
     html += `<div class="nethd">${dot} Rete ${esc(n.name)} <span class="mut" style="font-weight:400;font-size:13px">- accesso come ${esc(n.login.name || n.login.user)}${n.login.admin ? ' (admin)' : ''}</span></div>`;
     html += list.length ? '<div class="grid">' + list.map(m => {
       const r = new Set(m.rights), on = m.online;
-      const btn = (a, label, cls='') => r.has(a) ? `<button class="${cls}" data-a="${a}" ${on ? '' : 'disabled'}>${label}</button>` : '';
+      const compatible = m.session_protocol === 2, available = on && compatible && m.accept !== false;
+      const btn = (a, label, cls='') => r.has(a) ? `<button class="${cls}" data-a="${a}" ${available ? '' : 'disabled'}>${label}</button>` : '';
+      const inventory = r.has('inventory') ? `<button data-a="manage" ${available && m.inventory ? '' : 'disabled'}>Gestisci PC</button>` : '';
       const old = m.admin && on && m.ver && P.update.latest && vless(m.ver, P.update.latest);
-      return `<div class="m ${on ? '' : 'off'}" data-nid="${m.nid}" data-id="${esc(m.id)}" data-name="${esc(m.name)}">
+      return `<div class="m ${on ? '' : 'off'}" data-nid="${esc(m.nid)}" data-id="${esc(m.id)}" data-name="${esc(m.name)}">
         <div class="top"><span class="dot ${on ? 'on' : ''}"></span><span class="nm" title="${esc(m.name)}">${esc(m.name || 'senza nome')}</span>
           ${m.my_session ? '<span class="pill" style="background:#dcfce7;color:#166534" title="Hai una finestra di sessione aperta con questa macchina">collegato</span>' : ''}
           ${m.service ? '<span class="pill" title="Servizio di sistema: Ctrl+Alt+Canc e UAC disponibili">servizio</span>' : ''}</div>
         <div class="sub">ID ${fid(m.id)}${m.os ? ' &middot; ' + esc(m.os) : ''}</div>
         <div class="sub">${on ? (esc(m.user || '') + ((Number(m.sessions) | 0) ? ` &middot; ${Number(m.sessions) | 0} sessioni` : '') + (m.accept === false ? ' &middot; accesso disabilitato' : '')) : (m.last_seen ? 'offline, visto ' + ago(m.last_seen) : 'offline')}</div>
-        <div class="acts">${btn('control', 'Controlla', 'pri')}${btn('view', 'Guarda')}${btn('files', 'File')}
+        ${on && !compatible ? '<div class="sub">Aggiorna RemoteDesk sul PC remoto per aprire una sessione.</div>' : ''}
+        ${on && compatible && r.has('inventory') && !m.inventory ? '<div class="sub">Inventario non abilitato sul PC remoto (richiede Windows).</div>' : ''}
+        <div class="acts">${btn('control', 'Controlla', 'pri')}${btn('view', 'Guarda')}${btn('files', 'File')}${inventory}
           ${old ? `<button data-upd="1" title="Questa macchina ha la versione ${esc(m.ver)}: aggiorna a ${esc(P.update.latest)}">Aggiorna ${esc(m.ver)} &rarr; ${esc(P.update.latest)}</button>` : ''}</div>
       </div>`}).join('') + '</div>'
       : `<div class="empty">${q ? 'Nessun risultato.' : 'Nessuna macchina su cui hai permessi in questa rete.'}</div>`;
@@ -387,9 +414,10 @@ $('machList').addEventListener('click', async ev => {
 });
 $('machList').addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.classList.contains('ip')) ev.target.closest('.inl').querySelector('button').click() });
 $('machList').addEventListener('dblclick', ev => {
-  const c = ev.target.closest('.m:not(.off)'); if (!c) return;
-  const m = S.machines.find(x => x.id === c.dataset.id && x.nid === c.dataset.nid); if (!m) return;
-  openSession(m.nid, m.id, m.name, m.rights.includes('control') ? 'control' : m.rights.includes('view') ? 'view' : 'files');
+  if (ev.target.closest('button')) return;
+  const c = ev.target.closest('.m:not(.off)');
+  const first = c && c.querySelector('button[data-a]:not(:disabled)');
+  if (first) openSession(c.dataset.nid, c.dataset.id, c.dataset.name, first.dataset.a);
 });
 $('search').oninput = () => renderMachines();
 $('bRefresh').onclick = async () => {
@@ -408,15 +436,23 @@ function renderNetworks(){
     return `<tr><td><b>${esc(n.name)}</b></td><td><span class="dot ${n.state === 'online' ? 'on' : 'warn'}"></span> ${esc(n.state)}${rel}${n.registered ? '' : ' <span class="pill">PC rimosso dalla rete</span>'}${n.conflict ? ' <span class="pill" style="background:#fee2e2;color:#991b1b" title="Due versioni diverse del registro utenti: lascia la rete e rientra con un amministratore attuale">registro in conflitto</span>' : ''}</td>
       <td>${n.login ? esc(n.login.name || n.login.user) + (n.login.admin ? ' (admin)' : '') : '<span class="mut">non effettuato</span>'}
         </td>
-      <td>${adm ? `<span class="key" style="display:inline-block;font-size:12px;padding:3px 8px" data-key="${esc(adm.key)}">••••••</span> <button data-show="${n.nid}">Mostra</button>` : '<span class="mut">solo admin</span>'}</td>
-      <td style="text-align:right;white-space:nowrap">${n.login ? `<button data-out="${n.nid}">Esci</button>` : ''} <button class="ghost" data-leave="${n.nid}">Lascia rete</button></td></tr>`;
+      <td>${adm ? `<button data-show="${esc(n.nid)}">Mostra chiave</button>` : '<span class="mut">solo admin</span>'}</td>
+      <td style="text-align:right;white-space:nowrap">${n.login ? `<button data-out="${esc(n.nid)}">Esci</button>` : ''} <button class="ghost" data-leave="${esc(n.nid)}">Lascia rete</button></td></tr>`;
   }).join('');
   $('addNet').disabled = !P.can_add_network;
   $('addNetHint').textContent = P.can_add_network ? '' : 'Per aggiungere una rete serve l\'accesso come amministratore di una rete di questo PC.';
 }
 $('netTbl').onclick = async ev => {
   const b = ev.target.closest('button'); if (!b) return;
-  if (b.dataset.show) { const k = b.closest('tr').querySelector('[data-key]'); k.textContent = k.dataset.key; b.remove() }
+  if (b.dataset.show) {
+    const dialog = $('keyDialog'), net = P.networks.find(n => n.nid === b.dataset.show);
+    dialog.dataset.nid = b.dataset.show;
+    $('keyTitle').textContent = 'Chiave della rete ' + net.name;
+    $('keyPwLabel').hidden = false; $('revealKey').hidden = false; $('revealKey').disabled = false;
+    $('revealedKey').hidden = true; $('keyError').textContent = '';
+    dialog.showModal(); $('keyPw').focus();
+    return;
+  }
   if (b.dataset.out) { await post('/api/logout', {nid:b.dataset.out}); refresh() }
   if (b.dataset.leave) {
     const n = P.networks.find(x => x.nid === b.dataset.leave);
@@ -424,6 +460,26 @@ $('netTbl').onclick = async ev => {
     const r = await post('/api/networks/leave', {nid:b.dataset.leave});
     if (r.error) toast(r.error); else { toast('Uscito dalla rete ' + n.name); refresh() }
   }
+};
+$('keyForm').onsubmit = async event => {
+  event.preventDefault();
+  const dialog = $('keyDialog'), nid = dialog.dataset.nid;
+  const token = Symbol(); dialog.currentRequest = token;
+  const password = $('keyPw').value; $('keyPw').value = ''; $('revealKey').disabled = true;
+  try {
+    const r = await post('/api/networks/key', {nid, password});
+    if (dialog.currentRequest !== token) return;
+    if (r.error || !r.key) throw Error(r.error || 'Chiave non disponibile');
+    $('revealedKey').value = r.key; $('revealedKey').hidden = false;
+    $('keyPwLabel').hidden = true; $('revealKey').hidden = true;
+    $('keyError').textContent = ''; $('revealedKey').select();
+  } catch (e) {
+    if (dialog.currentRequest === token) $('keyError').textContent = e.message;
+  } finally { if (dialog.currentRequest === token) $('revealKey').disabled = false }
+};
+$('keyClose').onclick = () => $('keyDialog').close();
+$('keyDialog').onclose = () => {
+  $('keyDialog').currentRequest = null; $('keyPw').value = ''; $('revealedKey').value = '';
 };
 $('addNet').onclick = () => openForm(null);
 
@@ -483,8 +539,10 @@ function renderUsers(){
   const me = (P.networks.find(n => n.nid === $('uNet').value) || {}).login || {};
   $('usersTbl').innerHTML = '<tr><th>Utente</th><th>Nome</th><th>Ruolo</th><th>Permessi</th><th></th></tr>' +
     Object.entries(R.users).sort().map(([u, x]) => {
-      const perms = x.admin ? 'tutte le macchine' : Object.entries(x.perms).map(([mid, r]) =>
-        `${mid === '*' ? '<b>tutte</b>' : esc((R.machines[mid] || {}).name || fid(mid))}: ${r.map(k => RLABEL[k]).join(', ')}`).join('<br>') || '<span class="mut">nessuno</span>';
+      const grants = Object.entries(x.perms).map(([mid, r]) =>
+        `${mid === '*' ? '<b>tutte</b>' : esc((R.machines[mid] || {}).name || mid)}: ${r.map(k => esc(RLABEL[k] || k)).join(', ')}`);
+      if (x.admin) grants.unshift('Desktop e lettura file su tutte le macchine');
+      const perms = grants.join('<br>') || '<span class="mut">nessuno</span>';
       return `<tr><td><b>${esc(u)}</b></td><td>${esc(x.name)}</td><td>${x.admin ? '<span class="pill">admin</span>' : 'utente'}</td><td style="font-size:12px">${perms}</td>
         <td style="text-align:right;white-space:nowrap"><button data-edit="${esc(u)}">Modifica</button> ${u === me.user ? '' : `<button class="ghost" data-del="${esc(u)}">Elimina</button>`}</td></tr>`;
     }).join('');
@@ -497,7 +555,7 @@ $('uNet').onchange = () => { $('uEdit').classList.add('hide'); editing = null; r
 function permOptions(cur){
   const v = cur.includes('files') && cur.includes('control') ? 'control,files' : cur.includes('control') ? 'control' :
             cur.includes('files') && cur.includes('view') ? 'view,files' : cur.includes('view') ? 'view' : cur.includes('files') ? 'files' : '';
-  return [['', 'nessun accesso'], ['view', 'solo visione'], ['view,files', 'visione + file'], ['files', 'solo file'], ['control', 'controllo'], ['control,files', 'controllo + file']]
+  return [['', 'nessun accesso'], ['view', 'solo visione'], ['view,files', 'visione + lettura file'], ['files', 'lettura file'], ['control', 'controllo'], ['control,files', 'controllo + lettura file']]
     .map(([k, l]) => `<option value="${k}" ${k === v ? 'selected' : ''}>${l}</option>`).join('');
 }
 function editUser(u){
@@ -508,17 +566,29 @@ function editUser(u){
   $('uPw').placeholder = u ? '(lascia vuoto per non cambiarla)' : 'min. 10 caratteri'; $('uAdmin').checked = !!x.admin;
   const rows = [['*', '<b>Tutte le macchine</b> di questa rete (anche quelle aggiunte in futuro)']].concat(
     Object.entries(R.machines).map(([mid, m]) => [mid, esc(m.name) + ' <span class="mut">' + fid(mid) + '</span>']));
-  $('permTbl').innerHTML = '<tr><th>Macchina</th><th>Permesso</th></tr>' + rows.map(([mid, label]) =>
-    `<tr><td>${label}</td><td><select data-m="${esc(mid)}">${permOptions(x.perms[mid] || [])}</select></td></tr>`).join('');
-  $('permTbl').classList.toggle('hide', $('uAdmin').checked);
+  $('permTbl').innerHTML = '<tr><th>Macchina</th><th>Desktop e file</th><th>Permessi aggiuntivi</th></tr>' + rows.map(([mid, label]) => {
+    const current = x.perms[mid] || [];
+    const extras = Object.entries(optionalRights).map(([key, name]) =>
+      `<label class="chk"><input type="checkbox" data-right="${key}" data-m="${esc(mid)}" ${current.includes(key) ? 'checked' : ''}> ${name}</label>`).join('');
+    return `<tr><td>${label}</td><td><select data-m="${esc(mid)}">${permOptions(current)}</select></td><td>${extras}</td></tr>`;
+  }).join('');
+  $('uAdmin').onchange();
   $('uEdit').scrollIntoView({behavior:'smooth'});
 }
-$('uAdmin').onchange = () => $('permTbl').classList.toggle('hide', $('uAdmin').checked);
+$('uAdmin').onchange = () => document.querySelectorAll('#permTbl select').forEach(s => s.disabled = $('uAdmin').checked);
 $('uNew').onclick = () => editUser(null);
 $('uCancel').onclick = () => { $('uEdit').classList.add('hide'); editing = null };
 $('uSave').onclick = async () => {
-  const perms = {};
-  document.querySelectorAll('#permTbl select').forEach(s => { if (s.value) perms[s.dataset.m] = s.value.split(',') });
+  const original = curNet().users[editing]?.perms || {};
+  const perms = Object.assign(Object.create(null), original);
+  document.querySelectorAll('#permTbl select').forEach(s => {
+    const mid = s.dataset.m, prev = original[mid] || [];
+    const legacy = [...s.options].find(opt => opt.defaultSelected);
+    const current = legacy && s.value === legacy.value ? prev.filter(k => !(k in optionalRights)) : (s.value ? s.value.split(',') : []);
+    const extra = [...s.closest('tr').querySelectorAll('input:checked')].map(el => el.dataset.right);
+    if (current.length || extra.length) perms[mid] = [...current, ...extra];
+    else delete perms[mid];
+  });
   $('uSave').disabled = true;
   const r = await post('/api/users/save', {nid:$('uNet').value, user:$('uUser').value, name:$('uName').value, password:$('uPw').value, admin:$('uAdmin').checked, perms});
   $('uSave').disabled = false;
@@ -542,12 +612,14 @@ $('machTbl').onclick = async ev => {
 // ---------------- registro accessi
 const KIND = {session_start:'Sessione iniziata', session_end:'Sessione terminata', file_in:'File caricato sul PC',
   file_out:'File scaricato dal PC', file_del:'File eliminato', file_ren:'File rinominato', file_mkdir:'Cartella creata', login_fail:'Login fallito', auth_fail:'Accesso negato', clip_in:'Appunti incollati sul PC', clip_out:'Appunti copiati dal PC'};
-const KGROUP = {session:['session_start','session_end'], file:['file_in','file_out','file_del','file_ren','file_mkdir'], clip:['clip_in','clip_out'], fail:['login_fail','auth_fail']};
+KIND.inventory_read = 'Inventario consultato';
+const KGROUP = {session:['session_start','session_end'], inventory:['inventory_read'], file:['file_in','file_out','file_del','file_ren','file_mkdir'], clip:['clip_in','clip_out'], fail:['login_fail','auth_fail']};
 let auditRows = [];
 const dur = s => s >= 3600 ? Math.floor(s/3600) + 'h ' + Math.round(s%3600/60) + 'm' : s >= 60 ? Math.round(s/60) + ' min' : s + ' s';
 const hsize = n => n == null ? '' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : (n/1048576).toFixed(1) + ' MB';
 function detail(e){
   switch (e.k) {
+    case 'inventory_read': return ({shares:'Condivisioni', drives:'Unità mappate', services:'Servizi', apps:'Applicazioni'})[e.section] || '';
     case 'session_start': return `${MODES[e.mode] || e.mode} da ${e.peer_name || fid(e.peer)}`;
     case 'session_end': return `${MODES[e.mode] || e.mode} da ${e.peer_name || fid(e.peer)}, durata ${dur(e.dur || 0)}`;
     case 'file_in': case 'file_out': return `${e.path} (${hsize(e.size)})${e.ok === false ? ' - NON completato' + (e.why ? ': ' + e.why : '') : ''}`;
@@ -555,13 +627,13 @@ function detail(e){
     case 'file_ren': return `${e.path} -> ${e.dest}`;
     case 'login_fail': return 'sulla console di questo PC';
     case 'auth_fail': return `${e.why || ''} - da ${e.peer_name || fid(e.peer || '')}`;
-    case 'clip_in': case 'clip_out': return `"${e.text || ''}"${e.len > (e.text || '').length ? ' ... (' + e.len + ' caratteri)' : ''}`;
+    case 'clip_in': case 'clip_out': return Number.isInteger(e.len) ? e.len + ' caratteri' : '';
   }
   return '';
 }
 function renderAuditMachines(){
   const R = S.admin_nets[$('aNet').value]; if (!R) return;
-  const html = '<option value="">Tutte le macchine</option>' + Object.entries(R.machines).map(([mid, m]) => `<option value="${mid}">${esc(m.name)} (${fid(mid)})</option>`).join('');
+  const html = '<option value="">Tutte le macchine</option>' + Object.entries(R.machines).map(([mid, m]) => `<option value="${esc(mid)}">${esc(m.name)} (${fid(mid)})</option>`).join('');
   if ($('aMach').dataset.h !== html) { const cur = $('aMach').value; $('aMach').innerHTML = html; $('aMach').dataset.h = html; $('aMach').value = cur }
 }
 $('aNet').onchange = () => { auditRows = []; renderAudit(); renderAuditMachines(); $('aInfo').textContent = '' };
@@ -591,7 +663,7 @@ function renderAudit(){
 }
 ['aKind','aMach'].forEach(id => $(id).onchange = renderAudit); $('aUser').oninput = renderAudit;
 $('aCsv').onclick = () => {
-  const q = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"' };
+  const q = v => { let t = String(v ?? ''); if (/^\s*[=+\-@＝＋－＠]|^[\t\r\n]/u.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"' };
   const csv = ['Data;PC;Evento;Utente;Dettagli'].concat(filteredAudit().map(e =>
     [new Date(e.t*1000).toLocaleString(), e.mname, KIND[e.k] || e.k, e.user, detail(e)].map(q).join(';'))).join('\r\n');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], {type:'text/csv'}));
@@ -609,6 +681,10 @@ function renderSettings(){
     });
     $('inDir').placeholder = S.incoming_default;
   }
+  $('turnPassword').placeholder = S.turn_password_set ? 'Password impostata' : '';
+  $('clearTurn').disabled = !S.turn_password_set;
+  $('turnSecret').placeholder = S.turn_secret_set ? 'Segreto impostato' : 'Almeno 32 byte';
+  $('clearSecret').disabled = !S.turn_secret_set;
   $('svcTxt').textContent = !P.service.supported ? 'Disponibile solo su Windows.' :
      P.service.installed ? (P.service.active ? 'Installato e attivo.' : 'Installato (in avvio...).') : 'Non installato.';
   $('svcBtn').textContent = P.service.installed ? 'Rimuovi servizio' : 'Installa servizio';
@@ -622,9 +698,23 @@ function renderSettings(){
 }
 $('updCheck').onclick = async () => { $('updCheck').disabled = true; await post('/api/update/check'); $('updCheck').disabled = false; refresh() };
 document.querySelectorAll('[data-s]').forEach(el => el.addEventListener('change', async () => {
-  const r = await post('/api/settings', {[el.dataset.s]: el.type === 'checkbox' ? el.checked : el.value.trim()});
+  const key = el.dataset.s, secret = key === 'turn_secret' || key === 'turn_pass';
+  if (secret && !el.value) return;
+  const value = key === 'stun' ? el.value.split(',').map(v => v.trim()).filter(Boolean)
+              : el.type === 'checkbox' ? el.checked : secret ? el.value : el.value.trim();
+  const r = await post('/api/settings', {[key]:value});
+  if (secret) el.value = '';
+  if (r.error) filled = false;
   toast(r.error || 'Impostazione salvata', 1500); refresh();
 }));
+$('clearTurn').onclick = async () => {
+  if (!confirm('Rimuovere la password del server TURN?')) return;
+  const r = await post('/api/settings', {turn_pass:''}); toast(r.error || 'Password rimossa'); refresh();
+};
+$('clearSecret').onclick = async () => {
+  if (!confirm('Rimuovere il segreto coturn da questo PC?')) return;
+  const r = await post('/api/settings', {turn_secret:''}); toast(r.error || 'Segreto rimosso'); refresh();
+};
 $('autostart').onchange = async () => { const r = await post('/api/autostart', {on:$('autostart').checked}); if (r.error) toast(r.error); refresh() };
 $('svcBtn').onclick = async () => {
   const install = !P.service.installed;
@@ -642,6 +732,7 @@ async function refresh(){
   try {
     P = await (await fetch('/api/public')).json();
     if (P.logged) { const r = await fetch('/api/state'); S = r.ok ? await r.json() : null } else S = null;
+    if ($('keyDialog').open && !S?.admin_nets?.[$('keyDialog').dataset.nid]) $('keyDialog').close();
     if (view === 'welcome-add' && !formMode) { renderHeader(); $('nav').classList.add('hide'); return }
     if (showingKey) { renderHeader(); return }
     if (editing !== null && tab === 'users') { renderHeader(); return }

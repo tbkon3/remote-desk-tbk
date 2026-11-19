@@ -2,6 +2,9 @@
 sessioni utente, servizio, avvio automatico, elevazione."""
 import ctypes
 import ctypes.wintypes as wt
+from contextlib import contextmanager
+import threading
+import time
 import logging
 import os
 import subprocess
@@ -91,9 +94,24 @@ MOD_VK = {"ctrl": 0xA2, "alt": 0xA4, "shift": 0xA0, "meta": 0x5B}
 SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 76, 77, 78, 79
 
 
+_input_state = threading.local()
+
+
+@contextmanager
+def input_guard(allowed):
+    _input_state.allowed = allowed
+    try:
+        yield
+    finally:
+        del _input_state.allowed
+
+
 def _send(inputs):
     arr = (INPUT * len(inputs))(*inputs)
-    return user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+    if not getattr(_input_state, "allowed", default_desktop_active)():
+        raise PermissionError("Desktop interattivo non disponibile")
+    if user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT)) != len(inputs):
+        raise OSError("Windows ha rifiutato l'input")
 
 
 def mouse_event(flags, dx=0, dy=0, data=0):
@@ -140,20 +158,24 @@ def key_vk(vk, down):
 
 
 def type_text(text):
-    ev = []
-    for ch in text.replace("\r\n", "\n"):
-        if ch == "\n":
-            ev += [key_input(0x0D), key_input(0x0D, flags=KEY_UP)]
-            continue
-        if ch == "\t":
-            ev += [key_input(0x09), key_input(0x09, flags=KEY_UP)]
-            continue
-        units = ch.encode("utf-16-le")
-        for k in range(0, len(units), 2):
-            cu = int.from_bytes(units[k:k + 2], "little")
-            ev += [key_input(0, cu, KEY_UNICODE), key_input(0, cu, KEY_UNICODE | KEY_UP)]
-    for k in range(0, len(ev), 200):
-        _send(ev[k:k + 200])
+    text = text.replace("\r\n", "\n")
+    for start in range(0, len(text), 32):
+        events = []
+        for ch in text[start:start + 32]:
+            if ch in ("\n", "\t"):
+                vk = 0x0D if ch == "\n" else 0x09
+                events.extend((key_input(vk), key_input(vk, flags=KEY_UP)))
+                continue
+            units = ch.encode("utf-16-le")
+            for k in range(0, len(units), 2):
+                value = int.from_bytes(units[k:k + 2], "little")
+                events.extend((key_input(0, value, KEY_UNICODE), key_input(0, value, KEY_UNICODE | KEY_UP)))
+        _send(events)
+
+
+def key_combo(vks):
+    if vks:
+        _send([key_input(vk) for vk in vks] + [key_input(vk, flags=KEY_UP) for vk in reversed(vks)])
 
 
 def vk_for_char(ch):
@@ -164,13 +186,22 @@ def vk_for_char(ch):
 
 
 # =========================================================================== desktop sicuro
-user32.OpenInputDesktop.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
-user32.OpenInputDesktop.restype = wt.HANDLE
-user32.SetThreadDesktop.argtypes = [wt.HANDLE]
-user32.CloseDesktop.argtypes = [wt.HANDLE]
+user32.GetThreadDesktop.argtypes = [wt.DWORD]
+user32.GetThreadDesktop.restype = wt.HANDLE
+user32.GetProcessWindowStation.argtypes = []
+user32.GetProcessWindowStation.restype = wt.HANDLE
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wt.HWND
+user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+advapi32.GetTokenInformation.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD, ctypes.c_void_p]
+advapi32.IsValidSid.argtypes = [ctypes.c_void_p]
+advapi32.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(wt.BYTE)
+advapi32.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wt.DWORD]
+advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wt.DWORD)
 user32.GetUserObjectInformationW.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD,
                                              ctypes.POINTER(wt.DWORD)]
-GENERIC_ALL, MAXIMUM_ALLOWED = 0x10000000, 0x02000000
+MAXIMUM_ALLOWED = 0x02000000
 
 
 def _desk_name(h):
@@ -181,34 +212,55 @@ def _desk_name(h):
     return ""
 
 
-class DesktopFollower:
-    """Sposta il thread corrente sul desktop che riceve l'input (Default / Winlogon / UAC).
-    Funziona davvero solo se il processo gira come SYSTEM (modalita' servizio)."""
-
-    def __init__(self):
-        self.name = None
-        self.h = None
-
-    def sync(self):
-        h = user32.OpenInputDesktop(0, False, GENERIC_ALL) or user32.OpenInputDesktop(0, False, MAXIMUM_ALLOWED)
-        if not h:
-            return False
-        name = _desk_name(h)
-        if name == self.name:
-            user32.CloseDesktop(h)
-            return False
-        if user32.SetThreadDesktop(h):
-            old, self.h, self.name = self.h, h, name
-            if old:
-                user32.CloseDesktop(old)
-            log.info("thread spostato sul desktop %s", name)
-            return True
-        user32.CloseDesktop(h)
+def _foreground_is_user_level():
+    """Also with UAC configured on Default, decline elevated or unidentified foreground windows."""
+    hwnd = user32.GetForegroundWindow()
+    pid = wt.DWORD()
+    if not hwnd or not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)):
         return False
+    process = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        return False
+    token = wt.HANDLE()
+    try:
+        if not advapi32.OpenProcessToken(process, 8, ctypes.byref(token)):
+            return False
+        # TOKEN_MANDATORY_LABEL starts with a SID pointer, followed by its attributes and SID.
+        buf, used = ctypes.create_string_buffer(256), wt.DWORD()
+        if not advapi32.GetTokenInformation(token, 25, buf, len(buf), ctypes.byref(used)):
+            return False
+        sid = ctypes.c_void_p.from_buffer(buf).value
+        if not sid or not advapi32.IsValidSid(sid):
+            return False
+        count = advapi32.GetSidSubAuthorityCount(sid)
+        if not count or not count[0]:
+            return False
+        integrity = advapi32.GetSidSubAuthority(sid, count[0] - 1)
+        return bool(integrity and integrity[0] <= 0x2000 and hwnd == user32.GetForegroundWindow())
+    finally:
+        if token.value:
+            kernel32.CloseHandle(token)
+        kernel32.CloseHandle(process)
 
+
+def default_desktop_active(service_mode=False):
+    """Check the worker's existing desktop. UOI_IO is true only on the input desktop."""
+    session = process_session()
+    if not session or (service_mode and session != active_console_session()):
+        return False
+    station = user32.GetProcessWindowStation()
+    desk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+    if not station or not desk or _desk_name(station).casefold() != "winsta0" or _desk_name(desk).casefold() != "default":
+        return False
+    active, size = wt.BOOL(), wt.DWORD()
+    if not user32.GetUserObjectInformationW(desk, 6, ctypes.byref(active), ctypes.sizeof(active), ctypes.byref(size)):
+        return False
+    return bool(active.value and (not service_mode or _foreground_is_user_level()))
 
 # =========================================================================== Ctrl+Alt+Canc
 def send_sas():
+    if not default_desktop_active(service_mode=True):
+        return False
     try:
         sas = ctypes.WinDLL("sas")
         sas.SendSAS.argtypes = [wt.BOOL]
@@ -233,6 +285,8 @@ def lock_workstation():
 
 
 def block_input(on):
+    if on and not default_desktop_active():
+        return False
     return bool(user32.BlockInput(bool(on)))
 
 
@@ -312,14 +366,19 @@ def clip_set(text):
 # =========================================================================== messaggi
 def message_box(text, title="RemoteDesk", ask=False, timeout_ms=30000):
     """Mostra un messaggio sul desktop dell'utente. Con ask=True ritorna True se risponde Si'."""
-    flags = 0x40000 | 0x10000 | (0x4 | 0x20 if ask else 0x40)  # topmost, foreground, yes/no+?, info
+    if ask and not default_desktop_active():
+        return False
+    deadline = time.monotonic() + timeout_ms / 1000
+    flags = 0x40000 | 0x10000 | (0x4 | 0x20 | 0x100 if ask else 0x40)  # MB_DEFBUTTON2 = No
     try:
         f = user32.MessageBoxTimeoutW
         f.argtypes = [wt.HWND, wt.LPCWSTR, wt.LPCWSTR, wt.UINT, wt.WORD, wt.DWORD]
         r = f(None, text, title, flags, 0, timeout_ms)
     except AttributeError:
+        if ask:
+            return False
         r = user32.MessageBoxW(None, text, title, flags)
-    return r == 6
+    return r == 6 and (not ask or (time.monotonic() < deadline and default_desktop_active()))
 
 
 # =========================================================================== sessioni / servizio
@@ -597,6 +656,8 @@ def _standard_cursors():
 
 def cursor_state():
     """('none'|nome CSS|'custom', handle) del cursore visibile ora, oppure None se non leggibile."""
+    if not default_desktop_active():
+        return ("none", None)
     ci = CURSORINFO()
     ci.cbSize = ctypes.sizeof(ci)
     if not user32.GetCursorInfo(ctypes.byref(ci)):
@@ -628,6 +689,8 @@ def _draw_cursor(h, w, hh, background):
 def cursor_image(h):
     """Cursore personalizzato -> (pixel RGBA, larghezza, altezza, hotspot x, hotspot y) oppure None.
     La trasparenza si ricava disegnandolo su nero e su bianco (vale anche per i cursori monocromatici)."""
+    if not default_desktop_active():
+        return None
     ii = ICONINFO()
     if not user32.GetIconInfo(h, ctypes.byref(ii)):
         return None
@@ -658,4 +721,4 @@ def cursor_image(h):
             out[i + 1] = min(255, g0 * 255 // a)
             out[i + 2] = min(255, b0 * 255 // a)
         out[i + 3] = a
-    return bytes(out), w, hh, hx, hy
+    return (bytes(out), w, hh, hx, hy) if default_desktop_active() else None

@@ -14,7 +14,7 @@ from fractions import Fraction
 from aiortc import (RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription,
                     VideoStreamTrack)
 
-from . import auth
+from . import auth, session_policy
 from .audio import SystemAudioTrack
 from .audit import Audit
 from .update import Updater
@@ -54,7 +54,7 @@ class ScreenTrack(VideoStreamTrack):
 
     def _grab(self):
         if self.cap is None:
-            self.cap = Capturer()
+            self.cap = Capturer(service_mode=self.s.agent.service_mode, expected_logon=self.s.windows_logon)
         arr, changed = self.cap.grab(self.s.monitor)
         return arr, changed
 
@@ -75,7 +75,13 @@ class ScreenTrack(VideoStreamTrack):
                 await asyncio.sleep(wait)
             fps = max(self.s.fps, 30) if time.time() < self.s.boost_until else self.s.fps
             self.next_t = max(self.next_t + 1.0 / fps, time.time() - 0.5)
+            if not self.s.can_view():
+                arr = None
+                break
             arr, changed = await loop.run_in_executor(self.pool, self._grab)
+            if arr is None:
+                self.last_frame = None
+                break
             force = self.s.force_frame or time.time() - self.last_sent > 1.0 or self.last_frame is None
             if changed or force:
                 break
@@ -88,6 +94,8 @@ class ScreenTrack(VideoStreamTrack):
             self.last_frame = frame
         else:
             frame = self.last_frame or black_frame()
+        if not self.s.can_view():
+            frame = self.last_frame = black_frame()
         frame.pts = int((time.time() - self.start_t) * 90000)
         frame.time_base = Fraction(1, 90000)
         self.last_sent = time.time()
@@ -118,18 +126,24 @@ class Session:
         self.sid = auth.secrets.token_hex(12)    # chiave locale: mai decisa dall'esterno
         self.peer = m.get("frm")
         self.peer_name = m.get("name") or fmt_id(self.peer)
-        self.mode = m.get("mode", "control")
-        self.user = m.get("user", "")
-        self.rights = set(m.get("_rights", []))
+        self.mode = m["mode"]
+        self.user = m["user"]
+        self.user_pub = net.reg.user(self.user)["pub"]
+        self.peer_pub = net.reg.machines()[self.peer]["pub"]
+        self.rights = session_policy.capabilities(agent.cfg, net.reg, self.user, self.mode, WIN)
+        self.revoked = False
+        self.lease_deadline = None
+        self.lease_timer = None
+        self.lease_issued = -1
+        self.channel_labels = set()
+        self.inventory_channel = None
+        self.windows_logon = None
         self.boost_until = 0
         self.cursor_key = None    # ultima forma del cursore inviata a questa sessione
-        try:
-            self.monitor = primary_index(list_monitors())
-        except Exception:
-            self.monitor = 0
+        self.monitor = 0
         self.fps, self.scale = 15, 1.0
         self.audio = None
-        self.clip = True
+        self.clip_read = None
         self.force_frame = False
         self.pc = self.ctl = self.files = self.track = None
         self.started = time.time()
@@ -143,21 +157,104 @@ class Session:
             log.debug("invio ctl fallito: %s", e)
 
     def can_view(self):
-        return self.mode in ("control", "view") and "view" in self.rights
+        return self.lease_active() and self.agent.cfg["accept_incoming"] and "view" in self.rights
+
+    def lease_active(self):
+        return (not self.revoked and self.lease_issued >= 0 and self.lease_deadline is not None
+                and time.monotonic() < self.lease_deadline and self.local_identity_current())
+
+    def local_identity_current(self):
+        if self.windows_logon is not None:
+            from .win_identity import effective_logon
+            try:
+                if effective_logon() == self.windows_logon:
+                    return True
+            except OSError:
+                pass
+            self.revoked = True
+            self.rights.clear()
+            return False
+        return True
+
+    def command_active(self, right):
+        # Called on the input worker between native batches, under its verified logon token.
+        cfg = self.agent.cfg
+        return (not self.revoked and not self.agent.active_prompts and self.lease_issued >= 0
+                and self.lease_deadline is not None and time.monotonic() < self.lease_deadline
+                and cfg["accept_incoming"] and cfg["allow_control"] and self.mode == "control"
+                and right in self.rights and (right == "control" or
+                    (right == "block_input" and cfg.get("allow_local_block") and not cfg.get("on_air"))))
+
+    def refresh_authorization(self):
+        """Never add capabilities to an already approved request."""
+        reg, me = self.net.reg, self.agent.cfg["id"]
+        if self.lease_deadline is not None and time.monotonic() >= self.lease_deadline:
+            self.revoked = True
+        if (self.net.conflict or getattr(self.net, "leaving", False) or not self.local_identity_current()
+                or self.agent.nets.get(self.net.nid) is not self.net
+                or (reg.user(self.user) or {}).get("pub") != self.user_pub
+                or (reg.machines().get(self.peer) or {}).get("pub") != self.peer_pub
+                or (reg.machines().get(me) or {}).get("pub") != self.agent.mpub):
+            self.revoked = True
+        self.rights.intersection_update(session_policy.capabilities(self.agent.cfg, reg, self.user, self.mode, WIN))
+        if auth.MODE_RIGHTS[self.mode] not in self.rights:
+            self.revoked = True
+        if self.revoked:
+            self.rights.clear()
+        return not self.revoked
+
+    def set_lease_deadline(self, deadline):
+        self.lease_deadline = deadline
+        if self.lease_timer:
+            self.lease_timer.cancel()
+        def expire():
+            self.revoked = True
+            self.rights.clear()
+            asyncio.create_task(self.close(reason="lease_expired"))
+        self.lease_timer = asyncio.get_running_loop().call_later(max(0, deadline - time.monotonic()), expire)
+
+    def renew(self, msg):
+        issued = msg.get("iat")
+        now = time.time()
+        if (type(issued) is not int or issued <= self.lease_issued or not now - 60 < issued <= now + 5
+                or not self.refresh_authorization()):
+            return
+        body = auth.renewal_body(self.net.nid, self.peer, self.agent.cfg["id"], self.rsid,
+                                 self.mode, self.user, issued)
+        if (any(msg.get(key) != value for key, value in body.items())
+                or not auth.verify(self.peer_pub, body, msg.get("msig", ""))
+                or not auth.verify(self.user_pub, body, msg.get("usig", ""))):
+            return
+        initial = self.lease_issued < 0
+        self.lease_issued = issued
+        deadline = time.monotonic() + min(60, issued + 60 - now)
+        if self.lease_deadline is None or deadline > self.lease_deadline:
+            self.set_lease_deadline(deadline)
+        if initial:
+            self.send_info()
 
     def perms(self):
         c = self.agent.cfg
-        ctl = bool(c["allow_control"]) and self.mode == "control" and "control" in self.rights
-        return {"control": ctl, "files": bool(c["allow_files"]) and "files" in self.rights,
-                "clipboard": ctl and bool(c["allow_clipboard"])}
+        live = self.lease_active() and c["accept_incoming"]
+        ctl = bool(live and not self.agent.active_prompts and c["allow_control"] and "control" in self.rights)
+        maintenance = ctl and not c.get("on_air")
+        files = bool(live and c["allow_files"] and "files" in self.rights)
+        return {"control": ctl, "files": files, "files_write": files and "files_write" in self.rights,
+                "files_delete": files and "files_delete" in self.rights,
+                "clipboard": bool(ctl and c["allow_clipboard"] and "clipboard" in self.rights),
+                "power": bool(maintenance and c.get("allow_power") and "power" in self.rights),
+                "block_input": bool(maintenance and c.get("allow_local_block") and "block_input" in self.rights),
+                "secure_desktop": bool(maintenance and c.get("allow_sas") and "secure_desktop" in self.rights)}
 
     def send_info(self):
+        if self.mode == "manage":
+            return
         try:
-            mons = list_monitors()
+            mons = list_monitors() if self.can_view() else []
         except Exception as e:
             log.warning("monitor non leggibili: %s", e)
             mons = []
-        self.send({"t": "info", "current": self.monitor, "perms": self.perms(), "name": self.agent.cfg["name"],
+        self.send({"t": "info", "lease_active": self.lease_active(), "current": self.monitor, "perms": self.perms(), "name": self.agent.cfg["name"],
                    "os": sys.platform, "service": self.agent.service_mode, "audio": self.audio is not None,
                    "monitors": [{"x": m["left"], "y": m["top"], "w": m["width"], "h": m["height"],
                                  "primary": m.get("primary", False)} for m in mons]})
@@ -168,20 +265,32 @@ class Session:
 
         @pc.on("datachannel")
         def on_dc(ch):
-            if ch.label == "ctl":
+            if (not self.refresh_authorization() or ch.label in self.channel_labels
+                    or ch.label not in session_policy.permitted_channels(self.mode)):
+                ch.close()
+                return
+            self.channel_labels.add(ch.label)
+            if ch.label == "inventory":
+                from .inventory_channel import InventoryChannel
+                self.inventory_channel = InventoryChannel(self, ch)
+            elif ch.label == "ctl":
                 self.ctl = ch
                 ch.on("message", self.on_ctl)
                 self.send_info()
             elif ch.label == "mm":  # movimenti mouse: canale non affidabile, latenza minima
-                ch.on("message", self.on_ctl)
+                ch.on("message", lambda raw: self.on_ctl(raw, mouse_only=True))
             elif ch.label == "files":
-                self.files = FileServer(self.agent, self, ch)   # ogni messaggio ricontrolla il permesso
+                try:
+                    self.files = FileServer(self.agent, self, ch)
+                except (OSError, ValueError) as exc:
+                    ch.close()
+                    log.warning("Accesso alla cartella di trasferimento non disponibile: %s", exc)
 
         @pc.on("connectionstatechange")
         async def on_state():
             st = pc.connectionState
             log.info("sessione %s con %s: %s", self.sid, self.peer_name, st)
-            if st == "connected" and not self.connected:
+            if st == "connected" and not self.connected and self.refresh_authorization():
                 self.connected = True
                 self.agent.log_event(f"{self.user}@{self.peer_name} ({fmt_id(self.peer)}) collegato - {self.mode}")
                 self.agent.audit.add("session_start", net=self.net.nid, user=self.user, peer=self.peer,
@@ -190,56 +299,80 @@ class Session:
                 await self.close()
 
         await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
-        if self.can_view():   # schermo e audio solo a chi ha il diritto di vedere
+        if not self.refresh_authorization():
+            raise RuntimeError("Autorizzazione revocata")
+        if "view" in self.rights:
+            try:
+                self.monitor = primary_index(list_monitors())
+            except Exception:
+                pass
             if "m=video" in sdp:
                 self.track = ScreenTrack(self)
                 pc.addTrack(self.track)
-            if "m=audio" in sdp:
+            if "audio" in self.rights and "m=audio" in sdp:
                 self.audio = SystemAudioTrack(self)
                 pc.addTrack(self.audio)
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
+        if not self.refresh_authorization():
+            raise RuntimeError("Autorizzazione revocata")
         return pc.localDescription.sdp
 
-    def on_ctl(self, raw):
+    def on_ctl(self, raw, mouse_only=False):
+        if self.revoked or self.mode == "manage" or not isinstance(raw, str) or len(raw) > 1_100_000:
+            return
         try:
             m = json.loads(raw)
         except Exception:
             return
+        if not isinstance(m, dict):
+            return
         t = m.get("t")
+        if t == "renew" and not mouse_only and len(raw) <= 8192:
+            self.renew(m)
+            return
+        if not isinstance(t, str) or (self.mode == "files" and t != "bye"):
+            return
+        if mouse_only and t != "mm":
+            return
         a = self.agent
         if t in INPUT_TYPES:
             self.boost_until = time.time() + 2
             if self.perms()["control"]:
                 m["mon"] = self.monitor
-                a.injector().put(m)
-        elif t == "rel":
+                a.injector().put(m, expected_logon=self.windows_logon, authorized=lambda: self.command_active("control"))
+        elif t == "rel" and self.perms()["control"]:
             a.injector().release_all()
-        elif t == "mon":
+        elif t == "mon" and self.can_view():
             i = int(m.get("i", 0))
             self.monitor = ALL if i == ALL else max(0, min(i, len(list_monitors()) - 1))
             self.force_frame = True
             self.send_info()
-        elif t == "q":
+        elif t == "q" and self.can_view():
             self.fps = max(2, min(int(m.get("fps", 15)), 30))
             self.scale = max(0.25, min(float(m.get("scale", 1.0)), 1.0))
             self.force_frame = True
-        elif t == "clipmode":
-            self.clip = bool(m.get("on"))
+        elif t == "clipread":
+            request_id = m.get("id")
+            if (type(request_id) is int and 0 <= request_id < 2**31 and self.perms()["clipboard"]
+                    and (self.clip_read is None or self.clip_read.done())):
+                self.clip_read = asyncio.create_task(self.read_clipboard(request_id))
         elif t == "clip":
-            if self.clip and self.perms()["clipboard"]:
-                text = str(m.get("text", ""))[:1_000_000]
+            if self.perms()["clipboard"] and isinstance(m.get("text"), str):
+                text = m["text"]
+                if len(text.encode("utf-8", errors="surrogatepass")) > 60_000:
+                    return
                 a.set_clipboard(text)
-                a.audit.add("clip_in", net=self.net.nid, user=self.user, peer_name=self.peer_name, text=text)
+                a.audit.add("clip_in", net=self.net.nid, user=self.user, peer_name=self.peer_name, length=len(text))
         elif t == "audio":
-            if self.audio and self.can_view():
+            if self.audio and self.can_view() and "audio" in self.rights:
                 e = self.audio.set_active(bool(m.get("on")))
                 if e:
                     self.send({"t": "notice", "text": e})
-        elif t == "chat":
+        elif t == "chat" and self.can_view():
             a.chat_add(self, "tech", str(m.get("text", ""))[:4000])
         elif t == "cad":
-            if self.perms()["control"]:
+            if self.perms()["secure_desktop"]:
                 asyncio.ensure_future(self.cad())
         elif t == "action":
             if self.perms()["control"]:
@@ -248,6 +381,8 @@ class Session:
             asyncio.ensure_future(self.close(notify=False))
 
     async def cad(self):
+        if not self.refresh_authorization() or not self.perms()["secure_desktop"]:
+            return
         ok = False
         if WIN:
             ok = await asyncio.get_running_loop().run_in_executor(None, W.send_sas)
@@ -256,10 +391,38 @@ class Session:
             self.send({"t": "notice", "text": "Ctrl+Alt+Canc richiede che sul PC remoto sia installata la "
                                               "modalita' servizio (Impostazioni > Servizio di sistema)."})
 
+    async def read_clipboard(self, request_id):
+        if not self.refresh_authorization() or not self.perms()["clipboard"]:
+            return
+        try:
+            value = await asyncio.get_running_loop().run_in_executor(None, self.agent.clipboard.get)
+        except Exception:
+            self.send({"t": "notice", "text": "Lettura appunti non disponibile"})
+            return
+        if not self.refresh_authorization() or not self.perms()["clipboard"] or self.agent.sessions.get(self.sid) is not self:
+            return
+        value = value if isinstance(value, str) else ""
+        # Keep even an escaped JSON payload within the SCTP message size.
+        raw = value.encode("utf-8", errors="replace")
+        text = raw[:60_000].decode("utf-8", errors="ignore")
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if len(json.dumps(text[:mid])) <= 64 * 1024 - 128:
+                low = mid
+            else:
+                high = mid - 1
+        text = text[:low]
+        self.send({"t": "clip", "id": request_id, "text": text, "trunc": len(text) != len(value)})
+        self.agent.audit.add("clip_out", net=self.net.nid, user=self.user, peer=self.peer, length=len(text))
+
     async def action(self, a, v):
         loop = asyncio.get_running_loop()
         if not WIN:
             self.send({"t": "notice", "text": "Azione disponibile solo su Windows"})
+            return
+        right = "block_input" if a == "block" else "power"
+        if not self.refresh_authorization() or not self.perms()[right]:
             return
         if a == "lock":
             await loop.run_in_executor(None, W.lock_workstation)
@@ -270,7 +433,8 @@ class Session:
             W.run_hidden(["shutdown", flag, "/f", "/t", "3"])
         elif a == "block":
             self.agent.block_owner = self.sid if v else None
-            self.agent.injector().set_block(bool(v))
+            self.agent.injector().set_block(bool(v), expected_logon=self.windows_logon,
+                                            authorized=lambda: self.command_active("block_input"))
             self.send({"t": "notice", "text": "Input dell'utente remoto " + ("BLOCCATO" if v else "sbloccato") +
                        ("" if self.agent.service_mode else " (richiede modalita' servizio)")})
 
@@ -278,10 +442,16 @@ class Session:
         if self.agent.sessions.get(self.sid) is not self:
             return
         self.agent.sessions.pop(self.sid, None)
+        self.revoked = True
+        if self.lease_timer:
+            self.lease_timer.cancel()
+        if self.inventory_channel:
+            self.inventory_channel.close()
         if notify:
             self.send({"t": "bye", "reason": reason} if reason else {"t": "bye"})
-        self.agent.injector().release_all()
-        if self.agent.block_owner == self.sid or not any(s.perms()["control"] for s in self.agent.sessions.values()):
+        if self.mode == "control" and self.agent._injector is not None:
+            self.agent._injector.release_all()
+        if self.agent.block_owner == self.sid:
             self.agent.block_owner = None
             self.agent.injector().set_block(False)
         if self.files:
@@ -292,6 +462,8 @@ class Session:
             self.audio.stop()
         if self.pc:
             await self.pc.close()
+        if self.files:
+            await self.files.wait_closed()
         if self.connected:
             self.agent.log_event(f"{self.peer_name} disconnesso")
             self.agent.audit.add("session_end", net=self.net.nid, user=self.user, peer=self.peer,
@@ -309,20 +481,20 @@ class Agent:
         self.data_dir = data_dir
         self.service_mode = service_mode
         self.sessions = {}
+        self.pending_approvals = {}
+        self.active_prompts = 0
         self.events = []
         self._injector = None
         self.clipboard = Clipboard()
-        self.clip_last = None
         self.stop_event = asyncio.Event()
         self.cloned = self._check_clone()
         self._migrate()
         self.nets = {}             # nid -> Network
         self.mkey = auth.load_machine_key(data_dir)
         self.mpub = auth.pub_of(self.mkey)
-        self.logins = {}           # token -> {"nets": {nid: {user, priv}}, "exp"}
-        from .common import write_private
-        self.local_token = auth.secrets.token_urlsafe(24)   # per comandi locali privilegiati (handover)
-        write_private(os.path.join(data_dir, "local.token"), self.local_token)
+        self.logins = {}
+        self.leases = {}
+        self.local_token = auth.secrets.token_urlsafe(32)
         self.audit = Audit(data_dir)
         self.block_owner = None
         self.seen_sids = {}        # anti-replay delle offerte, comune a tutte le reti
@@ -334,13 +506,14 @@ class Agent:
         self.chat = []             # messaggi chat (in memoria)
         self.chat_seq = 0
         self.chat_seen = 0         # ultimo segnale di vita della finestra chat locale
-        self.chat_read = 0         # ultimo messaggio letto localmente
-        self.fail = []             # orari dei login falliti
+        self.chat_read = {}        # sid -> ultimo messaggio letto
+        self.fail = []
+        self.login_busy = 0
 
     # ------------------------------------------------------------------ utilita'
     def injector(self):
         if self._injector is None:
-            self._injector = Injector()
+            self._injector = Injector(service_mode=self.service_mode)
         return self._injector
 
     def log_event(self, text):
@@ -381,9 +554,6 @@ class Agent:
 
     def _migrate(self):
         """Configurazione 2.0/2.1 (una sola rete) -> elenco di reti; server di segnalazione multipli (2.3.1)."""
-        if (self.cfg.get("signal") or "").strip().rstrip("/") in ("https://ntfy.sh", ""):
-            from .relays import DEFAULT_SIGNAL
-            self.cfg.update(signal=DEFAULT_SIGNAL)
         if self.cfg.get("networks") is None:
             nets = []
             if self.cfg.get("network") and self.cfg.get("password"):
@@ -409,17 +579,42 @@ class Agent:
         return n
 
     def registry_changed(self, net):
-        for s in list(self.sessions.values()):  # permessi revocati: chiudo subito
-            if s.net is not net:
+        for key, lease in list(self.leases.items()):
+            if lease["net"] is not net:
                 continue
-            r = net.reg.rights(s.user, self.cfg["id"])
-            if s.mode not in r or self.cfg["id"] not in net.reg.machines():
-                asyncio.ensure_future(s.close())
+            grant, peer = lease["grant"], lease["peer"]
+            if (net.conflict or getattr(net, "leaving", False)
+                    or (net.reg.machines().get(peer) or {}).get("pub") != lease["pub"]
+                    or (net.reg.machines().get(self.cfg["id"]) or {}).get("pub") != self.mpub
+                    or (net.reg.user(grant["user"]) or {}).get("pub") != auth.pub_of(grant["priv"])
+                    or auth.MODE_RIGHTS[lease["mode"]] not in net.reg.rights(grant["user"], peer)):
+                self.leases.pop(key, None)
+        for future, target, mode, target_pub, user, user_pub in net.pending.values():
+            if not future.done() and (net.conflict or getattr(net, "leaving", False)
+                    or auth.MODE_RIGHTS[mode] not in net.reg.rights(user, target)
+                    or (net.reg.user(user) or {}).get("pub") != user_pub
+                    or (net.reg.machines().get(target) or {}).get("pub") != target_pub
+                    or (net.reg.machines().get(self.cfg["id"]) or {}).get("pub") != self.mpub):
+                future.set_exception(RuntimeError("Autorizzazione di sessione revocata"))
+        for session in list(self.pending_approvals.values()):
+            if session.net is net:
+                session.refresh_authorization()
+        for session in list(self.sessions.values()):
+            if session.net is not net:
+                continue
+            allowed = session.refresh_authorization()
+            if self.block_owner == session.sid and not session.perms()["block_input"]:
+                self.block_owner = None
+                self.injector().set_block(False)
+            if session.files:
+                if "files" not in session.rights:
+                    session.files.close()
+                elif session.lease_active():
+                    session.files.recheck_permissions()
+            if not allowed:
+                asyncio.create_task(session.close(reason="revoked"))
             else:
-                s.rights = r
-                if "files" not in r and s.files:
-                    s.files.close()
-                s.send_info()
+                session.send_info()
 
     async def create_network(self, name, admin, password, pcname):
         name = name.strip()
@@ -435,8 +630,9 @@ class Agent:
             doc["network"] = name
             doc["users"][u] = {"pub": auth.pub_of(priv), "admin": True, "name": admin.strip(), "perms": {}}
             doc["machines"][self.cfg["id"]] = {"pub": self.mpub, "name": self.cfg["name"]}
+        signed = n.reg.signed_update(u, priv, mut)
         self.nets[nid] = n
-        n.apply_registry(n.reg.signed_update(u, priv, mut))
+        n.apply_registry(signed)
         n.restart()
         return n, key, priv
 
@@ -458,20 +654,25 @@ class Agent:
                                    "ultime modifiche le ha fatte un altro amministratore: entra con le sue credenziali)")
             if not reg.is_admin(admin):
                 raise RuntimeError("Questo utente non e' piu' amministratore della rete")
+            if (("network" in reg.doc and reg.doc["network"].strip().lower() != name.lower())
+                    or (reg.user(admin) or {}).get("pub") != auth.pub_of(priv)):
+                raise RuntimeError("Identità della rete o dell'amministratore cambiata")
+            if nid in self.nets:
+                raise RuntimeError("Questo PC fa gia' parte di questa rete")
+            def mut(d):
+                d["machines"][self.cfg["id"]] = {"pub": self.mpub, "name": pcname or self.cfg["name"]}
+            signed = reg.signed_update(auth.norm_user(admin), priv, mut)
+            if not reg.check_new(signed):
+                raise RuntimeError("Registrazione del dispositivo non valida")
         except BaseException:
             n.stop()
             raise
         if pcname:
             self.cfg.update(name=pcname)
         n.reg = reg
-        n.entry["history"] = sorted([d for d in docs if isinstance(d, dict) and d.get("v", 0) <= reg.version
-                                     and d.get("v") is not None], key=lambda d: d["v"])[-100:]
+        n.entry["history"] = reg.trusted_history
         self.nets[nid] = n
-        u = auth.norm_user(admin)
-
-        def mut(d):
-            d["machines"][self.cfg["id"]] = {"pub": self.mpub, "name": self.cfg["name"]}
-        n.apply_registry(n.reg.signed_update(u, priv, mut))
+        n.apply_registry(signed)
         await n.publish_registry()
         for other in self.nets.values():  # annuncio subito nome e versione del registro aggiornati
             asyncio.ensure_future(other._safe_presence())
@@ -480,6 +681,8 @@ class Agent:
 
     async def leave_network(self, nid, lg=None):
         n = self.net(nid)
+        n.leaving = True
+        self.registry_changed(n)
         for s in list(self.sessions.values()):
             if s.net is n:
                 await s.close()
@@ -502,18 +705,12 @@ class Agent:
         self.log_event(f"Uscito dalla rete {n.name}")
 
     def ice_servers(self):
-        ice = [RTCIceServer(urls=u) for u in (self.cfg["stun"] or [])]
-        if self.cfg["turn_url"]:
-            ice.append(RTCIceServer(urls=self.cfg["turn_url"], username=self.cfg["turn_user"] or None,
-                                    credential=self.cfg["turn_pass"] or None))
-        return ice
+        from .ice import servers
+        return [RTCIceServer(**server) for server in servers(self.cfg)]
 
     def ice_for_browser(self):
-        ice = [{"urls": self.cfg["stun"] or []}]
-        if self.cfg["turn_url"]:
-            ice.append({"urls": self.cfg["turn_url"], "username": self.cfg["turn_user"],
-                        "credential": self.cfg["turn_pass"]})
-        return ice
+        from .ice import servers
+        return servers(self.cfg)
 
     def logged_user(self):
         if WIN and self.service_mode:
@@ -522,78 +719,108 @@ class Agent:
 
     def user_home(self):
         if WIN and self.service_mode:
-            return W.session_profile_dir(W.process_session()) or os.path.join(
-                os.environ.get("PUBLIC", r"C:\Users\Public"))
+            return W.session_profile_dir(W.process_session())
         return os.path.expanduser("~")
 
     def incoming_dir(self):
-        d = self.cfg["incoming_dir"]
-        if not d:
-            home = self.user_home() or os.getcwd()
-            d = os.path.join(home, "Downloads")
-            if not os.path.isdir(d):
-                d = home
-        return d
+        if self.cfg["incoming_dir"]:
+            return self.cfg["incoming_dir"]
+        home = self.user_home()
+        return os.path.join(home, "Downloads") if home else ""
 
     def set_clipboard(self, text):
-        self.clip_last = text
         try:
             self.clipboard.set(text)
         except Exception as e:
             log.debug("clip set: %s", e)
 
     # ------------------------------------------------------------------ sessioni in ingresso
+    def verified_offer(self, net, m):
+        user, peer, mode = m.get("user"), m.get("frm"), m.get("mode")
+        if (m.get("protocol") != auth.SESSION_PROTOCOL or not isinstance(mode, str) or mode not in auth.MODE_RIGHTS
+                or not isinstance(user, str) or not (0 < len(user) <= 500) or auth.norm_user(user) != user
+                or not isinstance(peer, str) or not re.fullmatch(r"[0-9]{9}", peer)
+                or not isinstance(m.get("sid"), str) or not re.fullmatch(r"[0-9a-f]{32}", m["sid"])
+                or type(m.get("uts")) is not int or abs(time.time() - m["uts"]) > 120
+                or not isinstance(m.get("sdp"), str) or not (0 < len(m["sdp"]) <= 256 * 1024)
+                or m.get("to") != self.cfg["id"]):
+            return False
+        operator, machine = net.reg.user(user), net.reg.machines().get(peer)
+        if not operator or not machine:
+            return False
+        body = auth.offer_body(net.nid, m)
+        return (auth.verify(machine.get("pub"), body, m.get("msig", ""))
+                and auth.verify(operator.get("pub"), body, m.get("usig", "")))
+
+    async def request_consent(self, session, text):
+        # Pause existing inputs before showing a dialog reachable on the desktop.
+        loop = asyncio.get_running_loop()
+        injector = self._injector
+        self.active_prompts += 1
+        self.block_owner = None
+
+        def show():
+            try:
+                if injector:
+                    injector.pause_and_drain()
+                if session.revoked or self.pending_approvals.get(session.sid) is not session:
+                    return False
+                return W.message_box(text, "RemoteDesk - richiesta di accesso", True, 30000)
+            finally:
+                if injector:
+                    injector.resume()
+
+        future = loop.run_in_executor(None, show)
+        def finished(done):
+            self.active_prompts -= 1
+            if not done.cancelled():
+                done.exception()
+        future.add_done_callback(finished)
+        # If the connection disappears, keep input blocked until the actual dialog has closed.
+        return await asyncio.shield(future)
+
     async def accept_offer(self, net, m):
-        cfg = self.cfg
-        reg = net.reg
-        if not cfg["accept_incoming"]:
-            raise RuntimeError("Questo PC non accetta connessioni in ingresso")
-        if cfg["id"] not in reg.machines():
-            raise RuntimeError("Questo PC non e' registrato nella rete")
-        frm = m.get("frm")
-        if not (isinstance(frm, str) and frm.isdigit() and frm in reg.machines()):
-            raise RuntimeError("Macchina chiamante non registrata nella rete")
-        m["name"] = str(reg.machines()[frm].get("name") or fmt_id(frm))[:80]   # nome dal registro firmato
-        user = auth.norm_user(str(m.get("user") or ""))[:64]
-        u = reg.user(user)
-        signed = {"frm": m.get("frm"), "to": cfg["id"], "sid": m.get("sid"), "mode": m.get("mode"),
-                  "user": m.get("user"), "ts": m.get("uts"), "h": auth.sdp_hash(m.get("sdp", ""))}
-        if not u or not auth.verify(u["pub"], signed, m.get("usig", "")):
-            self.log_event(f"BLOCCATA richiesta con firma non valida (utente '{user}', da {fmt_id(m.get('frm'))})")
-            self.audit.add("auth_fail", net=net.nid, user=user, peer=m.get("frm"), peer_name=m.get("name"), why="firma non valida")
-            raise RuntimeError("Autenticazione non valida")
-        mode = m.get("mode") if m.get("mode") in ("control", "view", "files") else "view"
-        rights = reg.rights(user, cfg["id"])
-        if mode not in rights:
-            self.log_event(f"Accesso negato a {user}: permesso '{mode}' mancante")
-            self.audit.add("auth_fail", net=net.nid, user=user, peer=m.get("frm"), peer_name=m.get("name"),
-                           why=f"permesso '{mode}' mancante")
-            raise RuntimeError(f"L'utente {user} non ha il permesso '{mode}' su questo PC")
-        m["_rights"] = sorted(rights)
-        m["mode"] = mode
-        name = f"{u.get('name') or user} da {m.get('name') or fmt_id(m.get('frm'))}"
-        if cfg["ask_confirm"] and WIN:
-            what = {"control": "controllare", "view": "vedere lo schermo di", "files": "accedere ai file di"}[mode]
-            ok = await asyncio.get_running_loop().run_in_executor(
-                None, W.message_box,
-                f"{name} (ID {fmt_id(m.get('frm'))}) chiede di {what} questo PC.\n\nConsentire?",
-                "RemoteDesk - richiesta di accesso", True, 30000)
-            if not ok:
-                self.log_event(f"Accesso rifiutato a {name}")
-                self.audit.add("auth_fail", net=net.nid, user=user, peer=m.get("frm"), peer_name=m.get("name"),
-                               why="rifiutato dall'utente del PC")
-                raise RuntimeError("Accesso rifiutato dall'utente remoto")
-        s = Session(self, net, m)
+        if not self.verified_offer(net, m):
+            raise RuntimeError("Identità del dispositivo o dell'operatore non valida")
+        if len(self.sessions) + len(self.pending_approvals) >= 8:
+            raise RuntimeError("Limite di sessioni raggiunto")
+        machine = net.reg.machines()[m["frm"]]
+        s = Session(self, net, dict(m, name=str(machine.get("name") or fmt_id(m["frm"]))[:80]))
+        if not s.refresh_authorization():
+            self.audit.add("auth_fail", net=net.nid, user=s.user, peer=s.peer, mode=s.mode, why="permesso mancante")
+            raise RuntimeError("Sessione non autorizzata dai permessi utente e dalle impostazioni del PC")
+        session_policy.validate_sdp(m["sdp"], s.mode)
+        self.pending_approvals[s.sid] = s
+        try:
+            if self.service_mode:
+                from .win_identity import interactive_logon
+                s.windows_logon = interactive_logon()
+            if self.cfg["ask_confirm"] or s.mode == "manage":
+                if not WIN:
+                    raise RuntimeError("Conferma locale non disponibile su questo sistema")
+                details = session_policy.prompt_capabilities(s.rights)
+                who = f"{s.display_user()} ({s.user}) da {s.peer_name} (ID {fmt_id(s.peer)})"
+                ok = await self.request_consent(s, f"{who} chiede di {details}.\n\nConsentire?")
+                if not ok:
+                    self.audit.add("auth_fail", net=net.nid, user=s.user, peer=s.peer, why="consenso rifiutato")
+                    raise RuntimeError("Accesso rifiutato dall'utente remoto")
+                if s.windows_logon is not None and interactive_logon() != s.windows_logon:
+                    raise RuntimeError("È cambiato l'utente locale durante la conferma")
+            if not s.refresh_authorization():
+                raise RuntimeError("Autorizzazione revocata durante la conferma")
+        finally:
+            self.pending_approvals.pop(s.sid, None)
         self.sessions[s.sid] = s
+        s.set_lease_deadline(time.monotonic() + 60)
         try:
             sdp = await s.start(m["sdp"])
-        except Exception:
-            try:
-                await s.close(notify=False)
-            except Exception:
-                pass
+            if self.sessions.get(s.sid) is not s or not s.refresh_authorization():
+                raise RuntimeError("Autorizzazione revocata durante la connessione")
+            session_policy.validate_sdp(sdp, s.mode)
+        except BaseException:
+            await s.close(notify=False)
             raise
-        asyncio.get_running_loop().call_later(40, lambda: asyncio.ensure_future(self._drop_if_stale(s)))
+        asyncio.get_running_loop().call_later(40, lambda: asyncio.create_task(self._drop_if_stale(s)))
         return sdp
 
     async def _drop_if_stale(self, s):
@@ -603,58 +830,91 @@ class Agent:
     # ------------------------------------------------------------------ login (uno per rete)
     async def login(self, tok, nid, user, password):
         n = self.net(nid)
-        now = time.time()
-        self.fail = [t for t in self.fail if now - t < 600]
-        if len(self.fail) >= 5:
-            await asyncio.sleep(min(30, 2 ** (len(self.fail) - 4)))
+        now = time.monotonic()
+        self.fail = [t for t in self.fail if now - t < 60]
+        if len(self.fail) >= 10 or self.login_busy >= 2:
+            raise RuntimeError("Troppi tentativi. Riprova tra un minuto.")
+        if not isinstance(password, str) or not 1 <= len(password) <= 1024 or not isinstance(user, str) or not 1 <= len(user) <= 64:
+            raise RuntimeError("Utente o password non validi")
+        self.login_busy += 1
+        try:
+            priv = await n.derive(user, password)
+        finally:
+            self.login_busy -= 1
         u = n.reg.user(user)
-        priv = await n.derive(user, password)
-        if not u or auth.pub_of(priv) != u["pub"]:
+        if self.nets.get(nid) is not n or not u or auth.pub_of(priv) != u["pub"]:
             self.fail.append(now)
-            self.log_event(f"Login fallito per '{auth.norm_user(user)}' (rete {n.name})")
             self.audit.add("login_fail", net=nid, user=auth.norm_user(user), where="console")
             raise RuntimeError("Utente o password non validi")
-        tok = self.add_login(tok, nid, user, priv)
         self.log_event(f"Login di {auth.norm_user(user)} sulla console (rete {n.name})")
-        return tok
+        return self.add_login(tok, nid, user, priv)
+
+    IDLE = 2 * 3600
 
     def add_login(self, tok, nid, user, priv):
-        lg = self.logins.get(tok or "")
-        if not lg:
-            tok = auth.secrets.token_urlsafe(32)
-            lg = self.logins[tok] = {"nets": {}, "exp": 0}
-        lg["nets"][nid] = {"user": auth.norm_user(user), "priv": priv}
-        lg["exp"] = time.time() + 12 * 3600
-        lg["act"] = time.time()
-        return tok
-
-    IDLE = 2 * 3600   # login della console: scade dopo 2 ore senza operazioni (e comunque dopo 12)
+        grants = self.get_login(tok).copy()
+        self.logins.pop(tok, None)
+        now = time.monotonic()
+        grants[nid] = {"user": auth.norm_user(user), "priv": priv, "exp": now + 12 * 3600, "act": now}
+        if len(self.logins) >= 128:
+            self.logins.pop(next(iter(self.logins)))
+        token = auth.secrets.token_urlsafe(32)
+        self.logins[token] = {"nets": grants}
+        return token
 
     def get_login(self, tok, touch=False):
-        """{nid: {user, priv}} delle reti in cui la console e' autenticata (vuoto se nessuna)."""
-        lg = self.logins.get(tok or "")
-        if not lg:
+        record = self.logins.get(tok)
+        if record is None:
             return {}
-        now = time.time()
-        if now > lg["exp"] or now - lg.get("act", now) > self.IDLE:
-            self.logins.pop(tok, None)
-            return {}
-        for nid, x in list(lg["nets"].items()):
+        now = time.monotonic()
+        grants = record["nets"]
+        for nid, grant in list(grants.items()):
             n = self.nets.get(nid)
-            u = n.reg.user(x["user"]) if n else None
-            if not u or auth.pub_of(x["priv"]) != u["pub"]:   # utente rimosso o password cambiata
-                lg["nets"].pop(nid, None)
-        if touch:
-            lg["act"] = now
-        return lg["nets"]
+            u = n.reg.user(grant["user"]) if n else None
+            if (not u or auth.pub_of(grant["priv"]) != u["pub"] or now >= grant["exp"]
+                    or now - grant["act"] >= self.IDLE):
+                del grants[nid]
+            elif touch == nid:
+                grant["act"] = now
+        if not grants:
+            self.logins.pop(tok, None)
+        return grants
 
     def logout(self, tok, nid=None):
-        lg = self.logins.get(tok or "")
-        if lg:
+        record = self.logins.get(tok)
+        if record:
             if nid:
-                lg["nets"].pop(nid, None)
+                record["nets"].pop(nid, None)
             else:
                 self.logins.pop(tok, None)
+
+    def issue_lease(self, net, grant, peer, mode, remote_sid):
+        now = time.monotonic()
+        self.leases = {key: entry for key, entry in self.leases.items() if entry["until"] > now}
+        if len(self.leases) >= 128:
+            raise ValueError("Troppe sessioni aperte")
+        key = auth.secrets.token_urlsafe(32)
+        self.leases[key] = {"net": net, "grant": grant, "peer": peer, "mode": mode, "sid": remote_sid,
+                            "pub": net.reg.machines()[peer]["pub"], "until": now + 60}
+        return key
+
+    def check_lease(self, token, key):
+        entry = self.leases.get(key) if isinstance(key, str) else None
+        if not entry:
+            return None
+        net, grant, peer = entry["net"], entry["grant"], entry["peer"]
+        now = time.monotonic()
+        if self.get_login(token).get(net.nid) is not grant:
+            return None
+        machines = net.reg.machines()
+        if (entry["until"] <= now or self.nets.get(net.nid) is not net or net.conflict or getattr(net, "leaving", False)
+                or machines.get(peer, {}).get("pub") != entry["pub"]
+                or machines.get(self.cfg["id"], {}).get("pub") != self.mpub
+                or auth.MODE_RIGHTS[entry["mode"]] not in net.reg.rights(grant["user"], peer)):
+            self.leases.pop(key, None)
+            return None
+        entry["until"] = now + 30
+        return entry
 
     def is_any_admin(self, logins):
         return any(self.nets[nid].reg.is_admin(x["user"]) for nid, x in logins.items() if nid in self.nets)
@@ -678,62 +938,96 @@ class Agent:
 
     def chat_send_local(self, text, sid=None):
         name = self.logged_user() or "Utente"
-        targets = [s for s in self.sessions.values()
-                   if s.connected and s.mode != "files" and (sid is None or s.sid == sid)]
-        if not targets:
-            raise RuntimeError("Nessun tecnico collegato")
-        for s in targets:
-            s.send({"t": "chat", "text": text, "name": name})
-        self._chat_push(targets[0] if len(targets) == 1 else None, "local", text, name)
-        self.chat_read = self.chat_seq
+        s = self.sessions.get(sid) if isinstance(sid, str) else None
+        if (not s or not s.connected or s.mode not in ("view", "control")
+                or not s.lease_active() or not s.refresh_authorization()):
+            raise RuntimeError("Seleziona un tecnico collegato")
+        s.send({"t": "chat", "text": text, "name": name})
+        self._chat_push(s, "local", text, name)
 
     def chat_unread(self):
-        return sum(1 for m in self.chat if m["who"] == "tech" and m["id"] > self.chat_read)
+        return sum(1 for m in self.chat if m["who"] == "tech" and m["sid"] in self.sessions
+                   and m["id"] > self.chat_read.get(m["sid"], 0))
 
     # ------------------------------------------------------------------ registro accessi in rete
     async def audit_query(self, net, lg, since, until):
         """Interroga tutte le macchine della rete (richiesta firmata, risposte cifrate per noi)."""
-        if not lg or not net.reg.is_admin(lg["user"]):
-            raise RuntimeError("Serve un amministratore di questa rete")
+        def authorized():
+            return (lg and self.nets.get(net.nid) is net and not net.conflict and not getattr(net, "leaving", False)
+                    and net.reg.is_admin(lg["user"]) and net.reg.user(lg["user"])["pub"] == auth.pub_of(lg["priv"])
+                    and (net.reg.machines().get(self.cfg["id"]) or {}).get("pub") == self.mpub)
+        if not authorized() or len(net.audit_waiters) >= 4:
+            raise RuntimeError("Consultazione del registro non disponibile")
         from . import audit as A
         priv, epub = A.new_ephemeral()
         rid = auth.secrets.token_hex(12)
-        ts = int(net.server_now())
-        body = {"rid": rid, "user": lg["user"], "since": int(since), "until": int(until), "epub": epub, "ats": ts}
-        results = {self.cfg["id"]: {"name": self.cfg["name"], "entries": self.audit.query(since, until, net=net.nid)}}
-        fut_box = []
-        net.audit_waiters[rid] = fut_box
+        body = {"type": "auditreq", "protocol": auth.SESSION_PROTOCOL, "net": net.nid, "frm": self.cfg["id"],
+                "to": "*", "rid": rid, "user": lg["user"], "since": int(since), "until": int(until),
+                "epub": epub, "ats": int(time.time())}
+        waiter = {"responses": {}, "size": 0}
+        net.audit_waiters[rid] = waiter
         try:
-            await net.publish({"type": "auditreq", "to": "*", **body, "sig": auth.sign(lg["priv"], body)})
+            await net.publish(dict(body, sig=auth.sign(lg["priv"], body), msig=auth.sign(self.mkey, body)))
             await asyncio.sleep(7)
         finally:
             net.audit_waiters.pop(rid, None)
-        for frm, m in fut_box:
-            mach = net.reg.machines().get(frm)
-            if not mach or not auth.verify(mach["pub"], {"rid": rid, "frm": frm, "c": m["box"]["c"]}, m.get("msig", "")):
+        if not authorized():
+            raise RuntimeError("Autorizzazione al registro revocata")
+        results = {self.cfg["id"]: {"name": self.cfg["name"], "entries": self.audit.query(since, until, net=net.nid)}}
+        for frm, (pub, box) in waiter["responses"].items():
+            machine = net.reg.machines().get(frm) or {}
+            if machine.get("pub") != pub:
                 continue
             try:
-                data = A.open_with(priv, m["box"])
+                data = A.open_with(priv, box)
             except Exception:
                 continue
-            results[frm] = {"name": data.get("name"), "entries": data.get("entries", [])}
+            if isinstance(data, dict) and isinstance(data.get("entries"), list):
+                results[frm] = {"name": machine.get("name"), "entries": [
+                    A.Audit.minimize(e) for e in data["entries"][:5000] if isinstance(e, dict) and e.get("net") == net.nid]}
         return results
 
-    def audit_answer(self, net, m, ev_time):
-        """Risposta a una richiesta di registro: solo admin di QUELLA rete, firma valida, richiesta recente.
-        Ogni rete vede solo gli eventi che la riguardano."""
+    def verified_audit_request(self, net, m):
+        if (net.conflict or self.nets.get(net.nid) is not net or getattr(net, "leaving", False)
+                or (net.reg.machines().get(self.cfg["id"]) or {}).get("pub") != self.mpub
+                or m.get("type") != "auditreq" or m.get("protocol") != auth.SESSION_PROTOCOL
+                or m.get("net") != net.nid or m.get("to") != "*"
+                or type(m.get("ats")) is not int or abs(time.time() - m["ats"]) > 120
+                or not isinstance(m.get("rid"), str) or not re.fullmatch(r"[0-9a-f]{24}", m["rid"])
+                or not isinstance(m.get("epub"), str) or len(m["epub"]) != 44
+                or any(type(m.get(k)) is not int or not 0 <= m[k] < 2**53 for k in ("since", "until"))
+                or not isinstance(m.get("user"), str) or not net.reg.is_admin(m["user"])):
+            return False
+        machine = net.reg.machines().get(m["frm"])
+        body = {k: m[k] for k in ("type", "protocol", "net", "frm", "to", "rid", "user", "since", "until", "epub", "ats")}
+        return bool(machine and auth.verify(machine["pub"], body, m.get("msig", ""))
+                    and auth.verify(net.reg.user(m["user"])["pub"], body, m.get("sig", "")))
+
+    async def audit_answer(self, net, m):
         from . import audit as A
-        body = {k: m.get(k) for k in ("rid", "user", "since", "until", "epub", "ats")}
-        if not net.reg.is_admin(body["user"]) or abs(ev_time - (body["ats"] or 0)) > 120:
-            return None
-        if not auth.verify(net.reg.user(body["user"])["pub"], body, m.get("sig", "")):
-            return None
-        box = A.seal_for(body["epub"], {"name": self.cfg["name"],
-                                        "entries": self.audit.query(body["since"], body["until"], net=net.nid)})
-        return {"type": "auditrep", "to": m["frm"], "rid": body["rid"], "box": box,
-                "msig": auth.sign(self.mkey, {"rid": body["rid"], "frm": self.cfg["id"], "c": box["c"]})}
+        if not self.verified_audit_request(net, m):
+            return
+        def read():
+            entries = self.audit.query(m["since"], m["until"], net=net.nid)
+            while True:
+                box = A.seal_for(m["epub"], {"name": self.cfg["name"], "entries": entries})
+                if len(box["c"]) <= 512 * 1024:
+                    return box
+                entries = entries[len(entries) // 2 + 1:]
+        try:
+            box = await asyncio.get_running_loop().run_in_executor(None, read)
+            if not self.verified_audit_request(net, m):
+                return
+            body = auth.audit_reply_body(net.nid, self.cfg["id"], m["frm"], m["rid"], box)
+            await net._safe_publish(dict(body, box=box, msig=auth.sign(self.mkey, body)))
+        except (OSError, ValueError):
+            log.warning("Risposta al registro non disponibile")
 
     async def close_sessions(self, sid=None, reason=None):
+        for s in list(self.pending_approvals.values()):
+            if sid is None or s.sid == sid:
+                s.revoked = True
+                s.rights.clear()
         for s in list(self.sessions.values()):
             if sid is None or s.sid == sid:
                 await s.close(reason=reason)
@@ -767,50 +1061,18 @@ class Agent:
             else:
                 msg, key = {"t": "cur", "c": css}, (css, None)
             for s in targets:
-                if s.cursor_key != key:
+                if s.can_view() and s.cursor_key != key:
                     s.cursor_key = key
                     s.send(msg)
 
-    async def clip_watch(self):
-        loop = asyncio.get_running_loop()
-        last_seq = None
-        baseline = True   # all'inizio di una sessione non invio cio' che c'era gia' negli appunti
-        while True:
-            await asyncio.sleep(0.8)
-            targets = [s for s in self.sessions.values() if s.clip and s.connected and s.perms()["clipboard"]]
-            if not targets or not self.cfg["allow_clipboard"]:
-                baseline = True
-                continue
-            try:
-                if WIN:
-                    seq = W.clip_seq()
-                    if seq == last_seq:
-                        continue
-                    last_seq = seq
-                text = await loop.run_in_executor(None, self.clipboard.get)
-            except Exception:
-                continue
-            if baseline:
-                baseline = False
-                if self.clip_last is None or text is not None:
-                    self.clip_last = text
-                continue
-            if not text or text == self.clip_last:
-                continue
-            self.clip_last = text
-            out = text.encode("utf-8")[:200_000].decode("utf-8", "ignore")   # sotto il limite del data channel
-            for s in targets:
-                s.send({"t": "clip", "text": out, "trunc": len(out) < len(text)})
-            try:
-                for nid in {s.net.nid for s in targets}:
-                    self.audit.add("clip_out", net=nid, text=text,
-                                   user=",".join(sorted({s.user for s in targets if s.net.nid == nid})))
-            except Exception as e:
-                log.warning("registro: %s", e)
+
 
     async def housekeeping(self):
         while True:
             await asyncio.sleep(120)
+            for token in list(self.logins):
+                self.get_login(token)
+            self.chat_read = {sid: value for sid, value in self.chat_read.items() if sid in self.sessions}
             try:
                 self.cfg.save()
             except Exception:
@@ -833,6 +1095,8 @@ class Agent:
     async def shutdown(self):
         # con "update" le finestre di sessione non si chiudono: continuano a riprovare finche' torno
         await self.close_sessions(reason="update" if self.updating else None)
+        if self._injector is not None:
+            await asyncio.to_thread(self._injector.close)
         for n in list(self.nets.values()):
             t = n.task
             n.stop()
@@ -870,8 +1134,13 @@ def service_marker(data_dir):
     return os.path.join(data_dir, "service.json")
 
 
-def open_console(port, path="/", size=(1180, 780), pos=None):
-    url = f"http://127.0.0.1:{port}{path}"
+def open_console(port, path="/", size=(1180, 780), pos=None, data_dir=None, desktop_only=False):
+    from .local_access import open_ticket
+    try:
+        url = open_ticket(port, path, data_dir=data_dir, desktop_only=desktop_only)
+    except OSError:
+        log.warning("Impossibile verificare l'identità dell'agente locale")
+        return
     if WIN:
         b = W.find_browser()
         if b:
@@ -886,10 +1155,10 @@ def open_console(port, path="/", size=(1180, 780), pos=None):
     webbrowser.open(url)
 
 
-def open_chat_window(port):
+def open_chat_window(port, data_dir=None, desktop_only=False):
     w, h = 380, 560
     pos = None
     if WIN:
         l, t, r, b = W.work_area()
         pos = (r - w - 12, b - h - 12)
-    open_console(port, "/chat", (w, h), pos)
+    open_console(port, "/chat", (w, h), pos, data_dir, desktop_only)

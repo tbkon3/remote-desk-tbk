@@ -7,22 +7,56 @@ cd "$(dirname "$0")"
 PYVER=3.12.10
 VERSION=$(python3 -c "import re;print(re.search(r'VERSION = \"(.+?)\"', open('../app/rd/common.py').read()).group(1))")
 OUT=out/RemoteDesk
+if [ -n "${RD_RELEASE_KEY:-}" ]; then
+  : "${RD_RUNTIME_SHA256:?Digest SHA-256 verificato del runtime NuGet richiesto per firmare}"
+  : "${RD_WINDOWS_LOCK:?Lock completo delle wheel Windows incluso PyAudioWPatch con hash richiesto per firmare}"
+  test -r "$RD_WINDOWS_LOCK"
+  python3 - "$RD_RELEASE_KEY" <<'PY'
+import ast, base64, pathlib, sys
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(pathlib.Path(sys.argv[1]).read_text().strip(), validate=True))
+raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+module = ast.parse(pathlib.Path("../app/rd/update.py").read_text(encoding="utf-8"))
+expected = next(node.value.value for node in module.body if isinstance(node, ast.Assign)
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "RELEASE_PUB")
+if base64.b64encode(raw).decode() != expected:
+    sys.exit("Chiave diversa dalla chiave di rilascio attesa")
+PY
+fi
 rm -rf out && mkdir -p "$OUT/runtime" dl
 
 # 1) Python per Windows (pacchetto ufficiale "python" su NuGet: contiene python.exe/pythonw.exe e la libreria standard)
-[ -f dl/python.nupkg ] || curl -sSL -o dl/python.nupkg "https://api.nuget.org/v3-flatcontainer/python/$PYVER/python.$PYVER.nupkg"
-rm -rf dl/nup && mkdir dl/nup && unzip -q dl/python.nupkg 'tools/*' -d dl/nup
+runtime="dl/python-$PYVER.nupkg"
+if [ ! -f "$runtime" ]; then
+  temp=$(mktemp dl/python.XXXXXXXX)
+  trap 'rm -f "$temp"' EXIT
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --output "$temp" "https://api.nuget.org/v3-flatcontainer/python/$PYVER/python.$PYVER.nupkg"
+  mv "$temp" "$runtime"
+fi
+if [ -n "${RD_RUNTIME_SHA256:-}" ]; then
+  [[ "$RD_RUNTIME_SHA256" =~ ^[a-fA-F0-9]{64}$ ]]
+  printf '%s  %s\n' "$RD_RUNTIME_SHA256" "$runtime" | sha256sum --check --status
+fi
+rm -rf dl/nup && mkdir dl/nup && unzip -q "$runtime" 'tools/*' -d dl/nup
 cp -r dl/nup/tools/. "$OUT/runtime/"
 ( cd "$OUT/runtime" && rm -rf tcl Lib/test Lib/tkinter Lib/idlelib Lib/turtledemo Lib/turtle.py include libs \
     Lib/ensurepip Scripts DLLs/_tkinter.pyd DLLs/tcl86t.dll DLLs/tk86t.dll Lib/site-packages/pip* )
 
 # 2) Librerie (wheel binarie per Windows 64 bit)
-pip install -q --no-compile --target "$OUT/runtime/Lib/site-packages" --platform win_amd64 \
+if [ -n "${RD_WINDOWS_LOCK:-}" ]; then
+  python3 -m pip --isolated install --require-hashes --ignore-installed --no-compile \
+    --target "$OUT/runtime/Lib/site-packages" --platform win_amd64 --python-version 3.12 \
+    --implementation cp --only-binary=:all: -r "$RD_WINDOWS_LOCK"
+else
+  pip install -q --no-compile --target "$OUT/runtime/Lib/site-packages" --platform win_amd64 \
     --python-version 3.12 --implementation cp --only-binary=:all: -r requirements-windows.txt
 pip download -q --no-deps --platform win_amd64 --python-version 3.12 --implementation cp \
     --only-binary=:all: PyAudioWPatch -d dl/pa
 unzip -qo dl/pa/pyaudiowpatch-*.whl -d "$OUT/runtime/Lib/site-packages"
 rm -rf "$OUT/runtime/Lib/site-packages/numpy"*   # non serve (e sotto Wine si blocca)
+fi
 
 # 3) RemoteDesk.exe (piccolo avviatore C con icona)
 x86_64-w64-mingw32-windres launcher.rc -O coff -o launcher.res
@@ -59,7 +93,8 @@ key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(open(os.environ["RD_
 log = open("../CHANGELOG.md", encoding="utf-8").read()
 m = re.search(r"## " + re.escape(ver) + r"\n(.*?)(\n## |\Z)", log, re.S)
 notes = re.sub(r"[*`]", "", m.group(1)).strip() if m else ""
-body = {"version": ver, "file": os.path.basename(z), "url": f"{base}/{os.path.basename(z)}",
+issued = int(time.time())
+body = {"issued": issued, "expires": issued + 30 * 86400, "version": ver, "file": os.path.basename(z), "url": f"{base}/{os.path.basename(z)}",
         "sha256": hashlib.sha256(open(z, "rb").read()).hexdigest(), "size": os.path.getsize(z),
         "date": time.strftime("%Y-%m-%d"), "notes": notes[:1500]}
 canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
