@@ -1134,17 +1134,18 @@ def service_marker(data_dir):
     return os.path.join(data_dir, "service.json")
 
 
-def open_console(port, path="/", size=(1180, 780), pos=None, data_dir=None, desktop_only=False):
+def open_console(port, path="/", size=(1180, 780), pos=None, data_dir=None, desktop_only=False, *, owner_only=False):
     from .local_access import open_ticket
     try:
-        url = open_ticket(port, path, data_dir=data_dir, desktop_only=desktop_only)
+        url = open_ticket(port, path, data_dir=data_dir, desktop_only=desktop_only, owner_only=owner_only)
     except OSError:
         log.warning("Impossibile verificare l'identità dell'agente locale")
         return
     if WIN:
         b = W.find_browser()
         if b:
-            prof = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "RemoteDesk", "browser")
+            prof = (os.path.join(data_dir, "browser") if owner_only else
+                    os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "RemoteDesk", "browser"))
             args = [b, f"--app={url}", f"--user-data-dir={prof}", "--no-first-run",
                     "--no-default-browser-check", f"--window-size={size[0]},{size[1]}"]
             if pos:
@@ -1155,10 +1156,10 @@ def open_console(port, path="/", size=(1180, 780), pos=None, data_dir=None, desk
     webbrowser.open(url)
 
 
-def open_chat_window(port, data_dir=None, desktop_only=False):
+def open_chat_window(port, data_dir=None, desktop_only=False, *, owner_only=False):
     w, h = 380, 560
     pos = None
     if WIN:
         l, t, r, b = W.work_area()
         pos = (r - w - 12, b - h - 12)
-    open_console(port, "/chat", (w, h), pos, data_dir, desktop_only)
+    open_console(port, "/chat", (w, h), pos, data_dir, desktop_only, owner_only=owner_only)

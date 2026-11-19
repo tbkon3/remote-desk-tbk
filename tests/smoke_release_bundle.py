@@ -1,4 +1,4 @@
-"""Windows CI smoke for the 2.4.0 artifact. Run: python tests/smoke_release_bundle.py <zip>."""
+"""Launch an isolated Windows package. Run: python tests/smoke_release_bundle.py ZIP [--version VERSION]."""
 import argparse
 import ctypes as ct
 import hashlib
@@ -8,13 +8,15 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from ctypes import wintypes as wt
 
 
@@ -155,7 +157,24 @@ def owner_headers(local_access, port, data, method, path):
     return headers
 
 
-def probe(root, data, port):
+def launcher_diagnostic(root, args, env):
+    # pythonw cannot report errors from startup before logging is ready. Re-run the
+    # same standalone entry point after its job is empty, using the bundled runtime.
+    try:
+        result = subprocess.run([root / "runtime/python.exe", root / "app/remotedesk.py", *args],
+                                cwd=root, env=env, timeout=10, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return "The same entry point remained running during the diagnostic interval"
+    for line in reversed(result.stderr.splitlines()):
+        if re.match(r"^[\w.]+(?:Error|Exception): ", line):
+            # Report the exception only; exclude configuration dumps, URLs and credentials.
+            line = re.sub(r"(?:https?|file)://\S+|[a-zA-Z0-9_+/=-]{28,}", "[redacted]", line)
+            return line[:420]
+    return f"Bundled Python exited with status {result.returncode}"
+
+
+def probe(root, data, port, version):
     # This branch is invoked by the Python executable INSIDE the candidate ZIP.
     root = root.resolve(strict=True)  # hosted runners can supply an 8.3 alias for %TEMP%
     runtime = (root / "runtime").resolve(strict=True)
@@ -167,7 +186,7 @@ def probe(root, data, port):
         require(origin.is_relative_to(runtime), f"Dependency outside artifact: {name}: {origin} (expected under {runtime})")
     from PIL import Image
     from rd import common, local_access
-    require(common.VERSION == VERSION, "Incorrect package version")
+    require(common.VERSION == version, "Incorrect package version")
     # The probe never reads service credentials from ProgramData, even if the socket disappears.
     common.PROGRAM_DATA = str(data)
     for name in ("icon.png", "icon-active.png"):
@@ -180,7 +199,7 @@ def probe(root, data, port):
         status, raw = local_request(port, "GET", "/api/public", headers)
         require(status == 200, "Native authenticated GET failed")
         state = json.loads(raw)
-        require(state["version"] == VERSION and state["me"]["id"] == FIXTURE_ID and state["me"]["name"] == FIXTURE_NAME,
+        require(state["version"] == version and state["me"]["id"] == FIXTURE_ID and state["me"]["name"] == FIXTURE_NAME,
                 "Agent did not load the candidate version and the private fixture")
         require(state["networks"] == [] and state["sessions"] == [] and not state["service"]["active"], "Unexpected active configuration")
         routes = {**PAGES, **{"/web/" + asset: asset for asset in ASSETS}}
@@ -192,49 +211,71 @@ def probe(root, data, port):
         require(local_request(port, "POST", "/api/quit", quit_headers)[0] == 200, "Authenticated fixture shutdown failed")
 
 
-def smoke(archive):
+def smoke(archive, version=VERSION):
     require(sys.platform == "win32", "Run this test on Windows")
+    if version == "2.4.1":
+        require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+                "Run the portable profile smoke on a disposable hosted Windows runner")
     # Validate every archive member via checkout code before importing or running anything in the ZIP.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
     from rd.release_package import MAX_PACKAGE, extract_package
     require(0 < archive.stat().st_size <= MAX_PACKAGE, "Invalid archive size")
-    with tempfile.TemporaryDirectory(prefix="RemoteDesk smoke ") as directory:
-        work = Path(directory)
+    with ExitStack() as stack:
+        work = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="RemoteDesk smoke ")))
         root = Path(extract_package(archive, work / "extracted package"))
         require({p.name for p in root.iterdir()} == {"RemoteDesk.exe", "runtime", "app", "LEGGIMI.txt"}, "Unexpected top-level package contents")
         verify_launcher(root / "RemoteDesk.exe")
-        profile = work / "isolated profile"
-        data = profile / "agent data"
-        data.mkdir(parents=True)
+        if version == "2.4.1":
+            # RUNNER_TEMP can be shared. The test profile uses the OS-selected private
+            # LocalAppData, just as the production portable launcher does.
+            from rd.common import known_folder
+            from rd.portable_storage import private_dir
+            profile = Path(known_folder(0x1c)) / ("RemoteDesk smoke " + secrets.token_hex(16))
+            require(not profile.exists(), "Fixture profile already exists")
+            private_dir(profile)
+            stack.callback(shutil.rmtree, profile)
+            data = profile / "agent data"
+            private_dir(data)
+        else:
+            profile = work / "isolated profile"
+            data = profile / "agent data"
+            profile.mkdir()
+            data.mkdir()
         config = {"id": FIXTURE_ID, "name": FIXTURE_NAME, "security_defaults": 1, "update_url": "", "auto_update": False,
                   "network": "", "networks": [], "known": {}, "signal": "", "stun": [], "turn_url": "", "accept_incoming": False}
         (data / "config.json").write_text(json.dumps(config), encoding="utf-8")
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHON", "RD_"))}
-        env.update(USERPROFILE=str(profile), LOCALAPPDATA=str(profile), APPDATA=str(profile), HOME=str(profile),
-                   LOGNAME="smoke", USER="smoke", USERNAME="smoke", LNAME="smoke", HTTP_PROXY="http://127.0.0.1:1",
-                   HTTPS_PROXY="http://127.0.0.1:1", ALL_PROXY="http://127.0.0.1:1", NO_PROXY="127.0.0.1,localhost")
+        if version == VERSION:
+            env.update(USERPROFILE=str(profile), LOCALAPPDATA=str(profile), APPDATA=str(profile), HOME=str(profile),
+                       LOGNAME="smoke", USER="smoke", USERNAME="smoke", LNAME="smoke")
+        env.update(HTTP_PROXY="http://127.0.0.1:1", HTTPS_PROXY="http://127.0.0.1:1",
+                   ALL_PROXY="http://127.0.0.1:1", NO_PROXY="127.0.0.1,localhost")
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-        with private_launcher(root / "RemoteDesk.exe", ["--agent-only", "--data", str(data), "--port", str(port)], env) as active:
+        args = ["--agent-only", "--data", str(data), "--port", str(port)]
+        with private_launcher(root / "RemoteDesk.exe", args, env) as active:
             end = time.monotonic() + 30
             while not (data / "local.token").is_file():
-                require(active(), "Launcher exited without starting the fixture")
+                if not active():
+                    raise RuntimeError("Launcher exited without starting the fixture: " + launcher_diagnostic(root, args, env))
                 require(time.monotonic() < end, "Agent did not bind its loopback port within 30 seconds")
                 time.sleep(0.1)
             subprocess.run([root / "runtime/python.exe", "-I", "-B", Path(__file__).resolve(), "--probe",
-                            str(root), str(data), str(port)], cwd=work, env=env, check=True, timeout=35)
+                            str(root), str(data), str(port), version], cwd=work, env=env, check=True, timeout=35)
             end = time.monotonic() + 10
             while active():
                 require(time.monotonic() < end, "Fixture did not exit after authenticated shutdown")
                 time.sleep(0.1)
-    print("RemoteDesk 2.4.0 Windows bundle smoke passed")
+    print(f"RemoteDesk {version} Windows bundle smoke passed")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 5 and sys.argv[1] == "--probe":
-        probe(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))
+    if len(sys.argv) == 6 and sys.argv[1] == "--probe":
+        probe(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]), sys.argv[5])
     else:
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("archive", type=Path)
-        smoke(parser.parse_args().archive.resolve())
+        parser.add_argument("--version", choices=(VERSION, "2.4.1"), default=VERSION)
+        args = parser.parse_args()
+        smoke(args.archive.resolve(), args.version)

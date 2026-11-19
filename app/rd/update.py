@@ -26,7 +26,8 @@ from aiohttp import ClientSession, ClientTimeout
 from . import auth
 from .common import DEFAULT_PORT, INSTALL_DIR, PROGRAM_DATA, ROOT_DIR, VERSION, WIN, secure_dir
 from .release_package import MAX_PACKAGE, extract_package, https_url, validate_manifest, version_tuple
-from .updater import acknowledge_start, clear_finished_stages, plain_path, stage_root, system_tool
+from .updater import (acknowledge_start, clear_finished_stages, plain_path, portable_preflight, stage_root,
+                      system_tool, _read_receipt, _write_receipt)
 
 log = logging.getLogger("rd.update")
 
@@ -162,8 +163,13 @@ class Updater:
         try:
             base = self.staging_root()
             target = INSTALL_DIR if self.agent.service_mode else ROOT_DIR
-            if Path(base).resolve().is_relative_to(Path(target).resolve()):
+            if self.agent.service_mode and Path(base).resolve().is_relative_to(Path(target).resolve()):
                 raise RuntimeError("I dati aggiornamento devono essere esterni alla cartella applicazione")
+            if not self.agent.service_mode:
+                target_id = portable_preflight(ROOT_DIR, self.agent.data_dir, INSTALL_DIR, PROGRAM_DATA, sys.executable)
+                for volume in (ROOT_DIR, self.agent.data_dir):
+                    if shutil.disk_usage(volume).free < int(info["size"]) + 32 * 1024**2:
+                        raise RuntimeError(f"Spazio insufficiente per preparare la copia in {volume}")
             if self.agent.service_mode:
                 candidate = os.path.join(base, "release-" + secrets.token_hex(16))
                 secure_dir(candidate)
@@ -171,7 +177,8 @@ class Updater:
             else:
                 os.makedirs(base, exist_ok=True)
             base = os.fspath(plain_path(base))
-            clear_finished_stages(base)
+            if self.agent.service_mode:
+                clear_finished_stages(base)
             if stage_dir is None:
                 stage_dir = tempfile.mkdtemp(prefix="release-", dir=base)
             staged = await self._download_and_stage(info, stage_dir)
@@ -180,7 +187,26 @@ class Updater:
             self.state = "installing"
             self.agent.log_event(f"Aggiornamento a RemoteDesk {info['version']} avviato ({who})")
             self.agent.audit.add("update", user=who, version=info["version"], old=VERSION)
-            self._launch_updater(staged, info["version"])
+            if self.agent.service_mode:
+                self._launch_updater(staged, info["version"])
+            else:
+                nonce = secrets.token_hex(32)
+                process = self._launch_updater(staged, info["version"], prepare_token=nonce, target_id=target_id)
+                try:
+                    marker = Path(staged).parent
+                    deadline = time.monotonic() + 300
+                    while _read_receipt(marker / ".prepared") != {"nonce": nonce}:
+                        if process.poll() is not None or time.monotonic() >= deadline:
+                            raise RuntimeError("Preparazione non riuscita: la copia attiva rimane aperta; consultare update.log")
+                        await asyncio.sleep(.2)
+                    if not self.available() or not self._maintenance_allowed(automatic):
+                        raise RuntimeError("Manutenzione sospesa prima della sostituzione")
+                    _write_receipt(marker / ".proceed", {"nonce": nonce})
+                except BaseException:
+                    if process.poll() is None:
+                        process.terminate()
+                        await asyncio.to_thread(process.wait, 20)
+                    raise
             stage_dir = None  # l'installatore usa la copia fino al termine
         except Exception as e:
             self.state, self.error = "error", f"Aggiornamento non riuscito: {e}"
@@ -235,7 +261,7 @@ class Updater:
             finally:
                 raise
 
-    def _launch_updater(self, staged, version):
+    def _launch_updater(self, staged, version, *, prepare_token=None, target_id=None):
         from . import winapi as W
         pyw = os.path.join(staged, "runtime", "pythonw.exe")
         script = os.path.join(staged, "app", "rd", "updater.py")
@@ -275,7 +301,11 @@ class Updater:
             cmd = [pyw, "-I", script, "--mode", "user", "--target", ROOT_DIR, "--source", staged,
                    "--port", str(self.agent.port), "--version", version, "--log", logf, "--pid", str(os.getpid()),
                    "--args", json.dumps([a for a in sys.argv[1:] if a != "--minimized"])]
+            if prepare_token:
+                cmd.extend(("--prepare-token", prepare_token))
+            if target_id:
+                cmd.extend(("--target-id", target_id))
             try:
-                subprocess.Popen(cmd, creationflags=flags | 0x01000000, close_fds=True, cwd=staged)  # fuori dal job
+                return subprocess.Popen(cmd, creationflags=flags | 0x01000000, close_fds=True, cwd=staged)
             except OSError:
-                subprocess.Popen(cmd, creationflags=flags, close_fds=True, cwd=staged)
+                return subprocess.Popen(cmd, creationflags=flags, close_fds=True, cwd=staged)

@@ -184,10 +184,10 @@ def _challenge(port, role, nonce):
         client.close()
 
 
-def _owner_keys(data_dir):
+def _owner_keys(data_dir, owner_only=False):
     from .common import PROGRAM_DATA, user_data_dir
     roots = [data_dir] if data_dir is not None else [user_data_dir()]
-    if os.name == "nt":
+    if os.name == "nt" and not owner_only:
         roots.append(PROGRAM_DATA)
     for root in dict.fromkeys(roots):
         try:
@@ -199,10 +199,12 @@ def _owner_keys(data_dir):
             continue
 
 
-def _verified(port, data_dir, desktop_only):
+def _verified(port, data_dir, desktop_only, *, owner_only=False):
     if type(port) is not int or not 1 <= port <= 65535:
         raise ValueError("Porta locale non valida")
-    roles = ("desktop",) if desktop_only else ("owner", "desktop")
+    if owner_only and (not data_dir or desktop_only):
+        raise ValueError("Profilo portabile non valido")
+    roles = ("owner",) if owner_only else (("desktop",) if desktop_only else ("owner", "desktop"))
     for role in roles:
         nonce = secrets.token_hex(16)
         try:
@@ -211,7 +213,7 @@ def _verified(port, data_dir, desktop_only):
             if role == "owner":
                 if mapping != "":
                     continue
-                keys = _owner_keys(data_dir)
+                keys = _owner_keys(data_dir, True) if owner_only else _owner_keys(data_dir)
             else:
                 if not _valid_nonce(mapping):
                     continue
@@ -224,22 +226,22 @@ def _verified(port, data_dir, desktop_only):
     raise PermissionError("Impossibile verificare l'identità dell'agente RemoteDesk locale")
 
 
-def open_ticket(port, path, data_dir=None, *, desktop_only=False):
+def open_ticket(port, path, data_dir=None, *, desktop_only=False, owner_only=False):
     if path not in _PAGES:
         raise ValueError("Pagina locale non valida")
     if os.name == "nt" and local_access_win.running_as_system():
         # Only the interactive tray should launch a browser. A SYSTEM browser is privileged
         # even when its RemoteDesk bearer is limited to the desktop role.
         raise PermissionError("Aprire la console dall'icona della sessione Windows")
-    role, key = _verified(port, data_dir, desktop_only)
+    role, key = _verified(port, data_dir, desktop_only, owner_only=owner_only)
     ticket = _make_proof(key, "claim", port, role, path)
     ticket["path"] = path
     fragment = quote(json.dumps(ticket, separators=(",", ":")), safe="")
     return f"http://127.0.0.1:{port}/local/start#{fragment}"
 
 
-def native_headers(port, path, method, data_dir=None):
+def native_headers(port, path, method, data_dir=None, *, owner_only=False):
     if not isinstance(path, str) or not path.startswith("/api/") or "#" in path or method not in ("GET", "POST"):
         raise ValueError("Richiesta locale non valida")
-    role, key = _verified(port, data_dir, False)
+    role, key = _verified(port, data_dir, False, owner_only=owner_only)
     return {NATIVE_HEADER: _compact(_make_proof(key, "native", port, role, method, path))}

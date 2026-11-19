@@ -1,4 +1,4 @@
-# RemoteDesk 2.4.0 per Windows
+# RemoteDesk per Windows
 
 RemoteDesk collega due PC registrati nella stessa rete di assistenza. Dalla rubrica il tecnico può vedere o controllare il desktop, trasferire file in una cartella condivisa e consultare l'inventario Windows. Ogni operazione richiede i permessi previsti sul PC assistito. Il pacchetto portabile include Python per Windows a 64 bit.
 
@@ -19,14 +19,26 @@ if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $atteso) { throw
 'Impronta verificata'
 ```
 
-L'hash permette di confrontare i byte con quelli pubblicati. Per la provenienza usa il canale di distribuzione approvato dalla tua organizzazione. Il pacchetto include l'avviatore originale, quindi le proprietà di `RemoteDesk.exe` in Esplora file riportano **2.3.2**. Controlla in **Impostazioni** che la console indichi **2.4.0**, la versione dell'applicazione avviata.
+L'hash permette di confrontare i byte con quelli pubblicati. Per la provenienza usa il canale di distribuzione approvato dalla tua organizzazione. Il pacchetto include l'avviatore originale, quindi le proprietà di `RemoteDesk.exe` in Esplora file riportano **2.3.2**. In **Impostazioni → Aggiornamenti** confronta la versione dell'applicazione avviata con quella indicata nel nome dello ZIP.
+
+## Uso da una cartella personalizzata
+
+Dalla 2.4.1 estrai l'intero ZIP in una cartella locale in cui il tuo account Windows possa creare, modificare e rinominare file, per esempio `D:\Strumenti\Assistenza\RemoteDesk`. Apri `RemoteDesk.exe` e controlla in **Impostazioni → Aggiornamenti** la modalità e il percorso della copia attiva. Quando installi una versione firmata, RemoteDesk riavvia quella copia nella stessa cartella. Tieni i tuoi documenti fuori da `app` e `runtime`, che contengono il programma.
+
+Per spostare la copia, chiudila dall'icona, sposta la cartella completa e riaprila con lo stesso account Windows. Il profilo portabile resta nel profilo utente del PC. Su una postazione con servizio già installato, la prima estrazione della 2.4.1 può creare un nuovo ID portabile. In questo caso scegli **Entra in una rete esistente** per registrarlo. Per usare di nuovo il servizio, apri la sua icona dalla postazione amministrata.
+
+La copia portabile conserva i componenti sostituiti in `.remotedesk-update\<identificativo>\previous` nella cartella del programma. Qui ritrovi anche eventuali file aggiunti in passato dentro `app` o `runtime`. Gli altri file presenti accanto a `RemoteDesk.exe` restano al loro posto. Prevedi spazio libero per il download, l'estrazione e la copia precedente.
+
+Se manca corrente durante la sostituzione e il programma non si apre, conserva la cartella e i suoi backup. Puoi ripartire estraendo lo ZIP ufficiale verificato in una nuova cartella e avviandolo con lo stesso account. Il profilo Windows mantiene l'identità della copia portabile. Se usavi un collegamento con `--data`, mantieni il percorso del profilo indicato in quel collegamento.
+
+Se la console 2.3.2 mostra ancora il vecchio servizio dopo un aggiornamento, puoi passare direttamente al portabile estraendo lo ZIP 2.4.1 in una nuova cartella. Chiudi la vecchia finestra e apri la console dall'icona della nuova copia.
 
 ## Aggiornamento da 2.3.2
 
 La versione 2.4.0 usa il **protocollo 2**. **Aggiorna entrambi gli estremi** prima di aprire una nuova sessione. Pianifica una finestra con accesso locale o con il tuo strumento di distribuzione aziendale e chiudi le sessioni attive della 2.3.2.
 
 1. Conserva una copia protetta dei dati del singolo PC secondo le procedure aziendali. In modalità utente i dati si trovano in `%LOCALAPPDATA%\RemoteDesk\data`, in modalità servizio in `%ProgramData%\RemoteDesk\data`. Mantieni separati dati, identità e chiavi di ciascuna macchina.
-2. **Modalità utente.** Chiudi RemoteDesk dall'icona. Estrai il pacchetto verificato in una nuova cartella e avvialo con lo stesso account Windows. La configurazione viene letta dal profilo utente. Controlla l'identità del PC, le reti presenti e la versione mostrata dalla console. Aggiorna gli eventuali collegamenti che avviano la vecchia copia.
+2. **Modalità utente.** Chiudi RemoteDesk dall'icona e usa lo stesso account Windows per l'aggiornamento. Una copia nuova può riusare il profilo precedente quando ne riconosce l'origine. Se compare un nuovo ID, registra la copia portabile nella rete e verifica il nome del PC. Aggiorna gli eventuali collegamenti che avviano la vecchia copia.
 3. **Modalità servizio.** Il servizio usa la copia in `%ProgramFiles%\RemoteDesk`. Affida all'amministratore Windows la sostituzione del pacchetto durante la manutenzione e la verifica del riavvio. Avviare un secondo eseguibile portabile lascia attiva la copia già registrata. Una prima installazione del servizio richiede che l'intero pacchetto sia predisposto nella cartella protetta da un amministratore. Apri la copia amministrata e scegli **Impostazioni → Installa servizio**. Verifica separatamente rete, identità e impostazioni della modalità servizio.
 4. Dopo il passaggio, su ogni PC la conferma locale è riattivata. File, appunti, inventario, alimentazione, blocco dell'input e Ctrl+Alt+Canc partono disabilitati. Dalla console del PC assistito il proprietario locale, con un account amministratore di rete se il PC è già iscritto, abilita le funzioni necessarie. Per i file scegli una cartella dedicata e controlla i diritti del tecnico in **Utenti e permessi**.
 5. Sul PC del tecnico apri la console della nuova versione, accedi alla rete con il suo account e aggiorna la rubrica. Sul PC assistito accedi a Windows con l'utente che riceverà la richiesta. Avvia una **nuova** sessione. L'utente locale verifica nome dell'operatore, macchina e azioni richieste, poi accetta o rifiuta. **Gestisci PC** richiede sempre questa conferma. Ripeti il controllo dei permessi anche per un utente con accesso limitato.
@@ -35,7 +47,7 @@ L'aggiornamento integrato richiede un manifesto di release valido e firmato dal 
 
 ### Se la versione servizio resta sulla 2.3.2
 
-Il messaggio **Installazione di RemoteDesk 2.4.0** compare dopo la verifica e l'estrazione dello ZIP. Apri una nuova console dall'icona di RemoteDesk per controllare la versione dell'agente. Il servizio registrato usa la copia in `%ProgramFiles%\RemoteDesk` anche se apri l'icona da una cartella portabile.
+Il messaggio **Installazione di RemoteDesk 2.4.0** compare dopo la verifica e l'estrazione dello ZIP. Apri una nuova console dall'icona di RemoteDesk per controllare la versione dell'agente. Con gli avviatori fino alla 2.4.0, una copia aperta da una cartella personalizzata può collegarsi alla console del servizio in `%ProgramFiles%\RemoteDesk`. Dalla 2.4.1 verifica modalità e cartella in **Impostazioni → Aggiornamenti**.
 
 Alcune installazioni della 2.3.2 hanno ereditato da Windows un permesso di scrittura sulla cartella `%ProgramData%\RemoteDesk`. L'updater 2.4.0 interrompe la migrazione quando trova questo permesso. Sul PC interessato, durante una finestra di manutenzione, un amministratore Windows può verificare questo caso con [Ripara-permessi-servizio.ps1](tools/Ripara-permessi-servizio.ps1). Apri Windows PowerShell a 64 bit come amministratore nella cartella dello script ed esegui prima la verifica in sola lettura.
 

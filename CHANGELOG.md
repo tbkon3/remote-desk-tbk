@@ -1,5 +1,11 @@
 # Note di versione
 
+## 2.4.1
+
+- Puoi estrarre lo ZIP in una cartella locale scrivibile e avviare `RemoteDesk.exe` anche su un PC con il servizio già installato. In Impostazioni puoi verificare quale copia stai usando e dove verrà installato l'aggiornamento.
+- La copia portabile aggiorna i componenti del programma nella cartella da cui è partita. La cartella può contenere altri file. Il profilo del tuo account Windows conserva identità e iscrizioni quando chiudi il programma e sposti la cartella.
+- Un nuovo profilo portabile cerca e installa gli aggiornamenti firmati quando non ci sono sessioni attive. Puoi cambiare la scelta in Impostazioni. I profili esistenti conservano la preferenza già salvata.
+
 ## 2.4.0
 
 - Il protocollo 2 autentica l'operatore e il dispositivo e rinnova le autorizzazioni durante la sessione. Per migrare dalla 2.3.2 chiudi le sessioni precedenti, aggiorna entrambi i PC, accedi dalla nuova console e apri una nuova richiesta sul PC assistito.
