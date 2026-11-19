@@ -100,6 +100,73 @@ while ($stack.Count) {
         raise RuntimeError("Verificare proprietario e permessi della copia protetta in " + INSTALL_DIR)
 
 
+EXISTING_TASK_POLICY = r"""
+function Test-RemoteDeskDefinition($task) {
+    if ($task.Path -ne '\RemoteDesk' -or !$task.Enabled) { throw 'task name/state' }
+    $sd = [Security.AccessControl.RawSecurityDescriptor]::new($task.GetSecurityDescriptor(7))
+    $trusted = @('S-1-5-18','S-1-5-32-544')
+    if ($trusted -notcontains $sd.Owner.Value -or $null -eq $sd.DiscretionaryAcl) { throw 'task owner/DACL' }
+    foreach ($ace in $sd.DiscretionaryAcl) {
+        if ($ace.AceType -eq 'AccessDenied') { continue }
+        if ($ace.AceType -ne 'AccessAllowed') { throw 'task ACE' }
+        if (($trusted -notcontains $ace.SecurityIdentifier.Value) -and ($ace.AccessMask -band (-bnot 0xA01200A9))) {
+            throw 'task ACL'
+        }
+    }
+    $def = $task.Definition
+    $userId = $def.Principal.UserId
+    if ($userId -ne 'S-1-5-18') {
+        $userId = [Security.Principal.NTAccount]::new($userId).Translate([Security.Principal.SecurityIdentifier]).Value
+    }
+    if ($userId -ne 'S-1-5-18' -or $def.Principal.LogonType -ne 5 -or $def.Principal.RunLevel -ne 1) {
+        throw 'task principal'
+    }
+    if ($def.Triggers.Count -ne 1 -or $def.Triggers.Item(1).Type -ne 8 -or $def.Actions.Count -ne 1) { throw 'task shape' }
+    $act = $def.Actions.Item(1)
+    if ($act.Type -ne 0 -or $act.Path -ne $env:RD_PYW -or $act.WorkingDirectory -ne $env:RD_INSTALL) {
+        throw 'task program'
+    }
+    if ($act.Arguments -ceq $env:RD_MODERN_ARGS) { return 'current' }
+    if ($act.Arguments -ceq $env:RD_LEGACY_ARGS) { return 'legacy' }
+    throw 'task arguments'
+}
+"""
+
+
+def prepare_existing_task():
+    """Controlla l'attivita' gia' presente. Su 2.3.2 adegua solo le opzioni Python."""
+    pyw, entry, _ = installed_paths()
+    legacy = f'"{entry}" --service --data "{PROGRAM_DATA}"'
+    shell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
+    system_dir = os.path.dirname(system_tool("schtasks.exe"))
+    env = {"SystemRoot": os.path.dirname(system_dir), "Path": system_dir,
+           "PSModulePath": os.path.join(os.path.dirname(shell), "Modules"), "RD_PYW": pyw,
+           "RD_INSTALL": INSTALL_DIR, "RD_LEGACY_ARGS": legacy, "RD_MODERN_ARGS": "-E -s " + legacy}
+    command = EXISTING_TASK_POLICY + r"""
+$ErrorActionPreference = 'Stop'
+$scheduler = New-Object -ComObject Schedule.Service
+$scheduler.Connect()
+$folder = $scheduler.GetFolder('\')
+$task = $folder.GetTask('RemoteDesk')
+if ((Test-RemoteDeskDefinition $task) -eq 'legacy') {
+    $security = $task.GetSecurityDescriptor(7)
+    $def = $task.Definition
+    $def.Actions.Item(1).Arguments = $env:RD_MODERN_ARGS
+    # TASK_UPDATE | DONT_ADD_PRINCIPAL_ACE | IGNORE_REGISTRATION_TRIGGERS. Mai CREATE.
+    # MS-TSCH: durante un UPDATE, SDDL NULL conserva il descrittore esistente, inclusa SACL.
+    [void]$folder.RegisterTaskDefinition('RemoteDesk', $def, 52, $null, $null, 5, $null)
+    $actual = $folder.GetTask('RemoteDesk')
+    if ((Test-RemoteDeskDefinition $actual) -ne 'current' -or $actual.GetSecurityDescriptor(7) -cne $security) {
+        throw 'task verification'
+    }
+}
+"""
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", command], env=env,
+                            cwd=system_dir, timeout=30, capture_output=True, creationflags=0x08000000)
+    if result.returncode:
+        raise PermissionError("Attivita' RemoteDesk assente, personalizzata o non protetta. Verifica amministrativa necessaria")
+
+
 def _task_xml():
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">

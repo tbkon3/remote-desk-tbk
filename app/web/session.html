@@ -158,6 +158,7 @@ async function post(p, b, timeout=10000){
     const r = await fetch(p, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b||{}), signal:controller.signal});
     const result = await r.json();
     if (!r.ok && !result.error) throw Error('Richiesta rifiutata');
+    result.httpStatus = r.status;
     return result;
   } finally { clearTimeout(timer) }
 }
@@ -173,6 +174,8 @@ let pc = null, ctl = null, mmc = null, fdc = null, perms = {control:false, files
 let userClosed = false, everConnected = false, retryTimer = null, statsTimer = null, connecting = false;
 let lease = null, proof = null, leaseTimer = null, pathTimer = null, attempt = 0;
 let leaseActive = false, initialRoots = false;
+let peerPresence = null, updateAnnounced = false, maintenance = null;
+const updateDelays = [2000, 5000, 10000, 20000];
 
 function overlay(txt, sub='', retry=false){
   document.body.classList.toggle('pending', !!txt);
@@ -184,6 +187,7 @@ function send(m){ if (ctl && ctl.readyState === 'open') ctl.send(JSON.stringify(
 
 function resetSession(){
   ++attempt; lease = proof = null; leaseActive = initialRoots = false;
+  updateAnnounced = false;
   clearTimeout(retryTimer); clearTimeout(leaseTimer); clearTimeout(pathTimer); clearInterval(statsTimer);
   clearClipRequest();
   if ($('dlg').open) $('dlg').close();
@@ -222,6 +226,36 @@ function releaseFileChannel(ch){
   ch.dispatchEvent(new Event('bufferedamountlow'));
 }
 
+function presenceOf(result){
+  if (!Number.isSafeInteger(result.peer_presence) || result.peer_presence <= 0 ||
+      typeof result.peer_pub !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(result.peer_pub)) return null;
+  return {key:result.peer_pub, stamp:result.peer_presence, version:result.peer_version || ''};
+}
+
+function waitAfterUpdate(){
+  resetSession(); setDot('warn');
+  const waiting = maintenance, remaining = waiting.until - performance.now();
+  if (remaining <= 0) { lost('Il PC non è tornato disponibile entro tre minuti.', 'Controlla la rubrica e riprova.'); return }
+  const delay = Math.min(remaining, updateDelays[Math.min(maintenance.tries++, updateDelays.length - 1)]);
+  overlay('Il PC remoto si sta aggiornando', 'In attesa di una nuova presenza firmata.');
+  retryTimer = setTimeout(() => {
+    if (maintenance !== waiting || userClosed) return;
+    if (performance.now() >= waiting.until) lost('Attesa del PC terminata.', 'Controlla la rubrica e riprova.');
+    else connect();
+  }, delay);
+}
+
+function updateInterrupted(){
+  if (!peerPresence) { lost('Il PC remoto si sta aggiornando.', 'Dopo il riavvio riapri la sessione dalla rubrica.'); return }
+  maintenance = {original:peerPresence, baseline:null, offline:false, tries:0, until:performance.now() + 180000};
+  waitAfterUpdate();
+}
+
+function transportLost(message, detail, retry=false){
+  if (updateAnnounced) updateInterrupted();
+  else lost(message, detail, retry);
+}
+
 async function connect(){
   if (connecting) return; connecting = true;
   resetSession();
@@ -230,9 +264,27 @@ async function connect(){
     if (!NET || !TARGET || !['view','control','files'].includes(MODE)) throw Error('Apri la sessione dalla rubrica.');
     overlay(everConnected ? 'Riconnessione...' : 'Connessione a ' + NAME + '...', 'In attesa della risposta del PC remoto');
     setDot('warn');
-    const st = await post('/api/session/ice', {nid:NET, to:TARGET, mode:MODE});
+    const target = {nid:NET, to:TARGET, mode:MODE};
+    if (maintenance) target.expected_pub = maintenance.original.key;
+    const st = await post('/api/session/ice', target);
     if (serial !== attempt) return;
+    if (maintenance && st.httpStatus === 409 && st.code === 'peer_offline') { maintenance.offline = true; waitAfterUpdate(); return }
     if (st.error) throw Error(st.error);
+    const presence = presenceOf(st);
+    if (maintenance) {
+      const m = maintenance;
+      if (!presence || presence.key !== m.original.key) throw Error('Identità del PC non confermata. Verifica la rubrica.');
+      if (performance.now() >= m.until) { lost('Attesa del PC terminata.', 'Controlla la rubrica e riprova.'); return }
+      const changedVersion = m.original.version && presence.version && presence.version !== m.original.version;
+      if (changedVersion && presence.version.localeCompare(m.original.version, 'en', {numeric:true}) < 0)
+        throw Error('Il PC ha annunciato una versione precedente. Verifica la rubrica.');
+      const newPresence = m.baseline !== null && presence.stamp > m.baseline;
+      if (!changedVersion && !newPresence && !(m.offline && presence.stamp >= m.original.stamp)) {
+        m.baseline = Math.max(m.baseline || 0, m.original.stamp, presence.stamp);
+        waitAfterUpdate(); return;
+      }
+    }
+    peerPresence = presence;
     const my = new RTCPeerConnection({iceServers: st.ice});
     pc = my;
     if (MODE !== 'files') {
@@ -254,7 +306,7 @@ async function connect(){
         if (pc !== my || fdc !== files) return;
         try { FC.onmsg(e.data) } catch { lost('Risposta del canale file non valida') }
       };
-      files.onclose = () => { if (pc === my && fdc === files) lost('Canale file chiuso') };
+      files.onclose = () => { if (pc === my && fdc === files) transportLost('Canale file chiuso') };
       files.onopen = () => { if (pc === my && fdc === files) firstRoots() };
     }
     my.ondatachannel = event => event.channel.close();
@@ -262,7 +314,7 @@ async function connect(){
       if (pc !== my || typeof e.data !== 'string' || e.data.length > 150000) return;
       try { onCtl(JSON.parse(e.data)) } catch { lost('Messaggio di sessione non valido') }
     };
-    ctl.onclose = () => { if (pc === my) lost('Canale di sessione chiuso') };
+    ctl.onclose = () => { if (pc === my) transportLost('Canale di sessione chiuso') };
     ctl.onopen = () => {
       if (pc !== my) return;
       if (!proof) { lost('Autorizzazione della sessione mancante'); return }
@@ -282,14 +334,18 @@ async function connect(){
       if (pc !== my) return;
       const s = my.connectionState;
       if (s === 'connected') { clearTimeout(pathTimer); clearTimeout(discTimer); onConnected() }
-      else if (s === 'disconnected') { setDot('warn'); discTimer = setTimeout(() => { if (pc === my && my.connectionState !== 'connected') lost(null, '', true) }, 6000) }
-      else if (s === 'failed') lost('Connessione WebRTC non riuscita', 'Per le connessioni Internet verifica il server TURN su entrambi i PC.', true);
+      else if (s === 'disconnected') { setDot('warn'); discTimer = setTimeout(() => { if (pc === my && my.connectionState !== 'connected') transportLost(null, '', true) }, 6000) }
+      else if (s === 'failed') transportLost('Connessione WebRTC non riuscita', 'Per le connessioni Internet verifica il server TURN su entrambi i PC.', true);
     };
     await my.setLocalDescription(await my.createOffer());
     const offer = await gatherRemoteDeskIce(my);
     if (pc !== my) return;
-    const r = await post('/api/connect', {nid:NET, to:TARGET, sdp:offer, mode:MODE}, 60000);
+    if (maintenance && performance.now() >= maintenance.until) { lost('Attesa del PC terminata.'); return }
+    if (maintenance) everConnected = false;
+    const r = await post('/api/connect', {...target, sdp:offer}, 60000);
     if (pc !== my) return;
+    if (maintenance && r.httpStatus === 409 && r.code === 'peer_offline') { maintenance.offline = true; waitAfterUpdate(); return }
+    if (maintenance) { maintenance = null; everConnected = false }
     if (r.error) { lost(r.error); return }
     if (typeof r.lease !== 'string' || !r.lease) throw Error('Autorizzazione della sessione mancante');
     lease = r.lease;
@@ -312,6 +368,7 @@ $('video').addEventListener('loadeddata', () => { if (pc && pc.connectionState =
 $('video').addEventListener('resize', () => { if (pc && pc.connectionState === 'connected') overlay('') });
 
 function lost(msg, sub, retry=false){
+  maintenance = null;
   resetSession(); setDot('bad');
   if (userClosed) return;
   if (everConnected && retry) {
@@ -378,9 +435,10 @@ function onCtl(m){
       ? `url("${m.img}") ${Math.max(0, m.hx | 0)} ${Math.max(0, m.hy | 0)}, default` : (CURSORS.has(m.c) ? m.c : 'default');
     applyCursor();
   } else if (m.t === 'notice') {
+    if (m.reason === 'update' && leaseActive) updateAnnounced = true;
     toast(m.text, 6000);
   } else if (m.t === 'bye' && m.reason === 'update') {
-    everConnected = true; lost('Il PC remoto si sta aggiornando', '', true);
+    updateInterrupted();
   } else if (m.t === 'bye') {
     userClosed = true; resetSession(); setDot('bad');
     overlay('Sessione chiusa dal PC remoto', '', true);
@@ -559,9 +617,9 @@ $('bFull').onclick = async () => {
   try { await navigator.keyboard.lock() } catch(e){}
   stage.focus();
 };
-$('bBye').onclick = () => { userClosed = true; send({t:'bye'}); resetSession(); overlay('Disconnesso', '', true); window.close() };
-$('bRetry').onclick = () => { userClosed = false; connect() };
-window.addEventListener('pagehide', () => { userClosed = true; send({t:'bye'}); resetSession() });
+$('bBye').onclick = () => { userClosed = true; maintenance = null; send({t:'bye'}); resetSession(); overlay('Disconnesso', '', true); window.close() };
+$('bRetry').onclick = () => { userClosed = false; maintenance = null; connect() };
+window.addEventListener('pagehide', () => { userClosed = true; maintenance = null; send({t:'bye'}); resetSession() });
 
 function dialog(title, withClip){
   return new Promise(res => {
@@ -660,7 +718,7 @@ async function loadRoots(){
     incomingDir = r.incoming;
     $('favs').innerHTML = r.entries.map(e => `<button data-p="${esc(e.p)}">${esc(e.n)}</button>`).join('');
     if (!cwd) openDir(r.entries[0] ? r.entries[0].p : '/');
-  } catch (e) { toast(e.message) }
+  } catch (e) { if (fileReady(channel)) toast(e.message) }
 }
 async function openDir(p){
   if (!fileReady()) return;
@@ -687,7 +745,7 @@ async function openDir(p){
       (r.entries.length ? '' : '<p class="mut" style="padding:10px">Cartella vuota</p>');
     $('list').entries = r.entries;
     updateActions();
-  } catch (e) { toast('Impossibile aprire: ' + e.message) }
+  } catch (e) { if (fileReady(channel)) toast('Impossibile aprire: ' + e.message) }
 }
 $('favs').onclick = ev => { const b = ev.target.closest('button'); if (b) openDir(b.dataset.p) };
 $('fUp').onclick = () => $('fUp').dataset.p && openDir($('fUp').dataset.p);

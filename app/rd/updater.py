@@ -11,6 +11,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import stat
@@ -33,6 +34,10 @@ def system_tool(name):
 
 def log(msg):
     line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg
+    if ARGS.mode == "service" and not getattr(ARGS, "log_verified", False):
+        if sys.stderr is not None:
+            print(line, file=sys.stderr)
+        return
     try:
         with open(ARGS.log, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -252,6 +257,42 @@ def installation_lock(target):
         os.close(fd)
 
 
+def service_stage(source, data_dir):
+    """Layout emesso da 2.3.2 oppure directory di transazione del nuovo formato."""
+    data_dir, source = Path(data_dir), Path(source)
+    if source == data_dir / "update" / "nuovo" / "RemoteDesk":
+        return data_dir
+    job = source.parent.parent
+    if (job.parent == data_dir.parent / "release-staging" and re.fullmatch(r"release-[0-9a-f]{32}", job.name)
+            and source == job / "nuovo" / "RemoteDesk"):
+        return job
+    raise PermissionError("Staging servizio non riconosciuto")
+
+
+def preflight_service(source, target):
+    if (plain_path(__file__) != source / "app" / "rd" / "updater.py"
+            or plain_path(sys.executable) != source / "runtime" / "pythonw.exe"):
+        raise PermissionError("Il processo di aggiornamento deve provenire dalla release verificata")
+    # In modalita' -I il pacchetto applicativo non viene aggiunto automaticamente.
+    sys.path.insert(0, os.fspath(source / "app"))
+    try:
+        from rd import common, service
+    finally:
+        sys.path.pop(0)
+    data = plain_path(common.PROGRAM_DATA)
+    log_path = Path(ARGS.log)
+    if (target != plain_path(common.INSTALL_DIR) or log_path.name != "update.log"
+            or plain_path(log_path.parent) != data / "logs"):
+        raise PermissionError("Destinazione o log servizio non corrispondente alla copia amministrata")
+    job = service_stage(source, data)
+    common.secure_dir(common.PROGRAM_DATA, existing=True)
+    ARGS.log_verified = True
+    if job != data:
+        common.secure_dir(job, existing=True)
+    service._verify_installation()
+    return service.prepare_existing_task
+
+
 def main():
     target = os.path.abspath(ARGS.target)
     source_path, target_path = plain_path(ARGS.source), plain_path(target)
@@ -260,7 +301,10 @@ def main():
             or not (target_path / "app" / "remotedesk.py").is_file()
             or not (source_path / "RemoteDesk.exe").is_file()):
         raise ValueError("percorsi dell'aggiornamento non validi")
+    prepare = preflight_service(source_path, target_path) if ARGS.mode == "service" else None
     with installation_lock(target_path):
+        if prepare:
+            prepare()
         return update_locked(os.fspath(target_path))
 
 

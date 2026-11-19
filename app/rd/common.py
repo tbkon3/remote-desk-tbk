@@ -78,10 +78,14 @@ def pick_data_dir(override=None, service=False):
     return user_data_dir()
 
 
-def secure_dir(d):
+def secure_dir(d, *, existing=False):
     if not WIN:
-        os.makedirs(d, mode=0o700, exist_ok=True)
-        os.chmod(d, 0o700)
+        if existing:
+            if not os.path.isdir(d):
+                raise FileNotFoundError(d)
+        else:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            os.chmod(d, 0o700)
         return
     from pathlib import Path
     import subprocess
@@ -93,7 +97,8 @@ def secure_dir(d):
     shell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
     system_dir = os.path.dirname(system_tool("whoami.exe"))
     env = {"SystemRoot": os.path.dirname(system_dir), "PATH": system_dir,
-           "PSModulePath": os.path.join(os.path.dirname(shell), "Modules"), "RD_DATA_TARGET": str(target)}
+           "PSModulePath": os.path.join(os.path.dirname(shell), "Modules"), "RD_DATA_TARGET": str(target),
+           "RD_DATA_EXISTING": "1" if existing else "0"}
     result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", DATA_DIRECTORY_POLICY],
                             cwd=system_dir, env=env, timeout=120, capture_output=True, creationflags=0x08000000)
     if result.returncode:
@@ -143,6 +148,22 @@ while ($p) {
 
 
 WINDOWS_PRIVATE_DIRECTORY_POLICY = r"""
+function Inspect-DataParent([string]$p) {
+    $item = Get-Item -LiteralPath $p -Force
+    if (!$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'parent link' }
+    $acl = Get-Acl -LiteralPath $p
+    if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'parent owner' }
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $raw.DiscretionaryAcl) { throw 'parent DACL' }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+        if ($ace.AceType -eq 'AccessDenied') { continue }
+        if ($ace.AceType -ne 'AccessAllowed') { throw 'parent ACE' }
+        if ($trusted -contains $ace.SecurityIdentifier.Value) { continue }
+        if (([int]$ace.AceFlags -band 8) -and $ace.SecurityIdentifier.Value -eq 'S-1-3-0') { continue }
+        # GENERIC_READ, GENERIC_EXECUTE, READ_CONTROL, SYNCHRONIZE e lettura/attraversamento.
+        if ($ace.AccessMask -band (-bnot 0xA01200A9)) { throw 'parent mutable' }
+    }
+}
 function Inspect([string]$p) {
     $obj = Get-Item -LiteralPath $p -Force
     if ($obj.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'reparse point' }
@@ -180,8 +201,11 @@ while ($p -ne $base) {
     if (!$p) { throw 'path' }
 }
 foreach ($p in (@($base) + $dirs)) {
-    if (![IO.Directory]::Exists($p)) { [void][IO.Directory]::CreateDirectory($p, $acl) }
-    Inspect $p
+    if (![IO.Directory]::Exists($p)) {
+        if ($env:RD_DATA_EXISTING -eq '1') { throw 'missing directory' }
+        [void][IO.Directory]::CreateDirectory($p, $acl)
+    }
+    if ($p -eq $base) { Inspect-DataParent $p } else { Inspect $p }
 }
 $queue = [Collections.Generic.Stack[string]]::new()
 $queue.Push($env:RD_DATA_TARGET)

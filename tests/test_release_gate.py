@@ -241,6 +241,27 @@ class ReleaseGate(unittest.IsolatedAsyncioTestCase):
         grant["act"] -= self.caller.IDLE + 1
         self.assertEqual((await self.post("/api/session/lease", params, token)).status, 403)
 
+    async def test_update_reconnect_uses_registered_signed_presence_and_pins_both_routes(self):
+        self.make_web()
+        token = self.caller.add_login(None, NID, "tech", self.user_key)
+        params = {"nid": NID, "to": HOST, "mode": "manage"}
+        await self.incoming.publish({"type": "presence", "session_protocol": auth.SESSION_PROTOCOL,
+                                     "inventory": True, "ver": "2.4.0"})
+        response = await self.post("/api/session/ice", params, token)
+        self.assertEqual(response.status, 200)
+        peer = json.loads(response.body)
+        self.assertEqual(peer["peer_pub"], self.host.mpub)
+        self.assertEqual(peer["peer_version"], "2.4.0")
+        self.assertLess(abs(time.time() - peer["peer_presence"]), 5)
+        for route in ("/api/session/ice", "/api/connect"):
+            response = await self.post(route, dict(params, expected_pub=self.caller.mpub), token)
+            self.assertEqual(response.status, 409)
+            self.assertNotIn("code", json.loads(response.body))
+        await self.incoming.publish({"type": "bye"})
+        response = await self.post("/api/session/ice", dict(params, expected_pub=self.host.mpub), token)
+        self.assertEqual(response.status, 409)
+        self.assertEqual(json.loads(response.body)["code"], "peer_offline")
+
     async def test_signed_inventory_session_over_memory_datagrams(self):
         loop = asyncio.get_running_loop()
         datagrams = MemoryDatagrams(loop)

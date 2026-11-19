@@ -1,0 +1,123 @@
+name: RemoteDesk Windows 2.4.0
+on:
+  pull_request:
+    paths: ['app/**', 'build/**', 'tests/**', '.github/workflows/windows-package.yml', 'dist/latest.json']
+  push:
+    branches: [main]
+    paths: ['app/**', 'build/**', 'tests/**', '.github/workflows/windows-package.yml', 'dist/latest.json']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 18
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography==46.0.3
+      - id: mode
+        shell: pwsh
+        run: |
+          $v = (Get-Content -Raw dist/latest.json | ConvertFrom-Json).version
+          switch ($v) {
+            '2.3.2' { 'mode=build' >> $env:GITHUB_OUTPUT }
+            '2.4.0' { 'mode=verify' >> $env:GITHUB_OUTPUT }
+            default { 'mode=complete' >> $env:GITHUB_OUTPUT }
+          }
+      - name: Build from the authenticated Windows runtime
+        if: steps.mode.outputs.mode == 'build'
+        shell: pwsh
+        run: |
+          python build/package_verified_runtime.py --source-ref "$env:GITHUB_SHA" --output-dir "$env:RUNNER_TEMP/remotedesk-package" --issued-at $([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+      - name: Verify the signed feed and archived package
+        if: steps.mode.outputs.mode == 'verify'
+        run: python tests/verify_release_feed.py
+      - name: Launch and close the Windows package in an isolated profile
+        if: steps.mode.outputs.mode != 'complete'
+        shell: pwsh
+        run: |
+          $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-package/RemoteDesk-2.4.0.zip" } else { 'dist/RemoteDesk-2.4.0.zip' }
+          python tests/smoke_release_bundle.py $zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: steps.mode.outputs.mode == 'build' && github.event_name != 'pull_request'
+        with:
+          name: remotedesk-windows-2.4.0
+          path: ${{ runner.temp }}/remotedesk-package
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 5
+
+  stage:
+    needs: windows
+    if: needs.windows.outputs.mode == 'build' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: remotedesk-windows-2.4.0
+          path: ${{ runner.temp }}/rd-stage
+      - name: Stage the tested package for offline signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/rd-stage"
+          package=RemoteDesk-2.4.0.zip
+          sha=$(sha256sum "$stage/$package" | cut -d' ' -f1)
+          bytes=$(stat -c '%s' "$stage/$package")
+          test "$(cat "$stage/SHA256SUMS")" = "$sha  $package"
+          jq -e --arg sha "$sha" --argjson bytes "$bytes" '
+            .version == "2.4.0" and .file == "RemoteDesk-2.4.0.zip" and
+            .url == "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.4.0.zip" and
+            .sha256 == $sha and .size == $bytes and (has("sig") | not)
+          ' "$stage/latest.unsigned.json" >/dev/null
+          test ! -e "dist/$package"
+          cp "$stage/$package" "dist/$package"
+          cp "$stage/SHA256SUMS" "dist/$package.sha256"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --force -- "dist/$package" "dist/$package.sha256"
+          git commit -m 'Stage Windows 2.4.0 package verified on the hosted runner'
+          ref="release/windows-2.4.0-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git push origin "HEAD:refs/heads/$ref"
+          echo "RD_STAGE_REF=$ref"
+          echo "RD_STAGE_COMMIT=$(git rev-parse HEAD)"
+          echo "RD_BLOB=$(git hash-object "dist/$package")"
+          echo "RD_UNSIGNED_MANIFEST=$(jq -c . "$stage/latest.unsigned.json")"
+
+  release:
+    needs: windows
+    if: needs.windows.outputs.mode == 'verify' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Publish the signed distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view v2.4.0 >/dev/null 2>&1; then
+            jq -r .notes dist/latest.json > "$RUNNER_TEMP/rd-release-notes"
+            gh release create v2.4.0 --target "$GITHUB_SHA" --title 'RemoteDesk 2.4.0' --notes-file "$RUNNER_TEMP/rd-release-notes" dist/RemoteDesk-2.4.0.zip dist/RemoteDesk-2.4.0.zip.sha256 dist/latest.json
+          fi

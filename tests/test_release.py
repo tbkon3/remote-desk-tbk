@@ -88,6 +88,58 @@ class PackageTests(unittest.TestCase):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_service_preflight_accepts_only_emitted_staging_layouts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            data = root / "managed" / "data"
+            target = root / "installed"
+            target.mkdir()
+            (data / "logs").mkdir(parents=True)
+            job = data.parent / "release-staging" / ("release-" + "f" * 32)
+            legacy = data / "update" / "nuovo" / "RemoteDesk"
+            modern = job / "nuovo" / "RemoteDesk"
+            stranger = root / "other" / "nuovo" / "RemoteDesk"
+            from rd import service
+            for source in (legacy, modern, stranger):
+                script = source / "app" / "rd" / "updater.py"
+                binary = source / "runtime" / "pythonw.exe"
+                for item in (script, binary):
+                    item.parent.mkdir(parents=True, exist_ok=True)
+                    item.touch()
+                args = SimpleNamespace(log=str(data / "logs" / "update.log"))
+                with (self.subTest(source=source), patch.object(installer, "__file__", str(script)),
+                      patch.object(sys, "executable", str(binary)), patch.object(common, "PROGRAM_DATA", str(data)),
+                      patch.object(common, "INSTALL_DIR", str(target)), patch.object(installer, "ARGS", args, create=True),
+                      patch.object(common, "secure_dir") as secure, patch.object(service, "_verify_installation") as verify):
+                    if source == stranger:
+                        with self.assertRaises(PermissionError):
+                            installer.preflight_service(source.resolve(), target.resolve())
+                        secure.assert_not_called()
+                        verify.assert_not_called()
+                    else:
+                        self.assertIs(installer.preflight_service(source.resolve(), target.resolve()), service.prepare_existing_task)
+                        self.assertTrue(args.log_verified)
+                        self.assertEqual(secure.call_count, 1 if source == legacy else 2)
+                        self.assertTrue(all(c.kwargs == {"existing": True} for c in secure.call_args_list))
+                        verify.assert_called_once()
+
+    def test_service_preflight_failure_precedes_lock_and_stop(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target, source = root / "installed", root / "stage"
+            (target / "app").mkdir(parents=True)
+            (target / "app" / "remotedesk.py").touch()
+            source.mkdir()
+            (source / "RemoteDesk.exe").touch()
+            args = SimpleNamespace(mode="service", target=target, source=source)
+            with (patch.object(installer, "ARGS", args, create=True),
+                  patch.object(installer, "preflight_service", side_effect=PermissionError("DACL")),
+                  patch.object(installer, "installation_lock") as lock, patch.object(installer, "stop_old") as stop,
+                  self.assertRaises(PermissionError)):
+                installer.main()
+            lock.assert_not_called()
+            stop.assert_not_called()
+
     def test_reparse_ancestor_is_rejected_before_resolution(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp) / "release-example"

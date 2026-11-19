@@ -15,6 +15,59 @@ from rd.updater import system_tool
 
 
 class ServiceStorageTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Task Scheduler Windows simulato")
+    def test_migrates_only_known_task_and_preserves_dacl(self):
+        # Intercetta la creazione COM: nessun accesso allo scheduler della macchina.
+        fixture = r"""
+$ErrorActionPreference = 'Stop'
+$env:RD_INSTALL = 'C:\Synthetic App'
+$env:RD_PYW = 'C:\Synthetic App\runtime\pythonw.exe'
+$env:RD_LEGACY_ARGS = '"C:\Synthetic App\app\remotedesk.py" --service --data "C:\Synthetic Data"'
+$env:RD_MODERN_ARGS = '-E -s ' + $env:RD_LEGACY_ARGS
+function New-Object { param($ComObject) if ($ComObject -ne 'Schedule.Service') { throw 'unexpected COM' }; return $script:scheduler }
+$script:scheduler = [pscustomobject]@{}
+$scheduler | Add-Member ScriptMethod Connect {}
+$scheduler | Add-Member ScriptMethod GetFolder { param($path) if ($path -ne '\') { throw 'unexpected folder' }; return $script:folder }
+$script:folder = [pscustomobject]@{}
+$folder | Add-Member ScriptMethod GetTask { param($name) if ($name -ne 'RemoteDesk') { throw 'unexpected task' }; return $script:task }
+$folder | Add-Member ScriptMethod RegisterTaskDefinition {
+    param($name,$def,$flags,$user,$password,$logon,$sddl)
+    if ($name -ne 'RemoteDesk' -or $flags -ne 52 -or $logon -ne 5 -or $null -ne $sddl -or
+        $null -ne $password -or $def.Actions.Item(1).Arguments -cne $env:RD_MODERN_ARGS) { throw 'unexpected update' }
+    $script:changes++
+}
+$actions = [pscustomobject]@{Count=1}
+$actions | Add-Member ScriptMethod Item { param($index) if ($index -ne 1) { throw 'bad index' }; return $script:action }
+$triggers = [pscustomobject]@{Count=1}
+$triggers | Add-Member ScriptMethod Item { param($index) return [pscustomobject]@{Type=8} }
+$principal = [pscustomobject]@{UserId='S-1-5-18';LogonType=5;RunLevel=1}
+$script:task = [pscustomobject]@{Path='\RemoteDesk';Enabled=$true;Definition=[pscustomobject]@{Actions=$actions;Triggers=$triggers;Principal=$principal}}
+$task | Add-Member ScriptMethod GetSecurityDescriptor { param($sections) if ($sections -ne 7) { throw 'bad sections' }; return $script:sddl }
+"""
+        cases = r"""
+foreach ($case in 'legacy','current','custom','mutable') {
+    $script:sddl = 'O:BAG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)'
+    $arg = $env:RD_LEGACY_ARGS
+    if ($case -eq 'current') { $arg = $env:RD_MODERN_ARGS }
+    if ($case -eq 'custom') { $arg = '--different' }
+    if ($case -eq 'mutable') { $script:sddl = 'O:BAG:SYD:P(A;;FA;;;SY)(A;;GW;;;BU)' }
+    $script:action = [pscustomobject]@{Type=0;Path=$env:RD_PYW;WorkingDirectory=$env:RD_INSTALL;Arguments=$arg}
+    $script:changes = 0
+    $rejected = $false
+    try { & $migration } catch { $rejected = $true }
+    if ($rejected -ne ($case -in 'custom','mutable') -or $script:changes -ne [int]($case -eq 'legacy')) { throw "case $case" }
+}
+"""
+        with patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=0)) as capture:
+            service.prepare_existing_task()
+        command = capture.call_args.args[0][-1]
+        shell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
+        proc = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
+                               "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"],
+                              input=fixture + "\n$migration = {\n" + command + "\n}\n" + cases,
+                              text=True, capture_output=True, timeout=25)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
     @unittest.skipUnless(os.name == "nt", "descrittori di sicurezza Windows")
     def test_windows_ancestry_checks_synthetic_descriptors(self):
         # Intercetta i due cmdlet di lettura. Oggetti e DACL sono solo in memoria.
@@ -30,6 +83,15 @@ Assert-TrustedAncestry 'C:\Synthetic\Test'
 $script:descriptor.SetSecurityDescriptorSddlForm('O:BAD:P(A;;FA;;;SY)(A;;0x40;;;WD)')
 try { Assert-TrustedAncestry 'C:\Synthetic\Test'; exit 5 } catch { if ($_.Exception.Message -notmatch 'ancestor replacement') { throw } }
 $trusted = @('S-1-5-18','S-1-5-32-544')
+$script:descriptor.SetSecurityDescriptorSddlForm('O:BAD:P(A;;FA;;;SY)(A;OICI;0x1200a9;;;BU)(A;OICIIO;GA;;;CO)')
+Inspect-DataParent 'C:\Synthetic\Test'
+try { Inspect 'C:\Synthetic\Test'; exit 7 } catch { if ($_.Exception.Message -notmatch 'ACE') { throw } }
+foreach ($rights in '0x2','0x4','0x40','0x100','0x40000','0x80000','GW') {
+    $script:descriptor.SetSecurityDescriptorSddlForm("O:BAD:P(A;;FA;;;SY)(A;;$rights;;;BU)")
+    try { Inspect-DataParent 'C:\Synthetic\Test'; exit 8 } catch { if ($_.Exception.Message -notmatch 'parent mutable') { throw } }
+}
+$script:descriptor.SetSecurityDescriptorSddlForm('O:BUD:P(A;;FA;;;SY)')
+try { Inspect-DataParent 'C:\Synthetic\Test'; exit 9 } catch { if ($_.Exception.Message -notmatch 'parent owner') { throw } }
 $script:descriptor.SetSecurityDescriptorSddlForm('O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
 Inspect 'C:\Synthetic\Test'
 $script:descriptor.SetSecurityDescriptorSddlForm('O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)')
