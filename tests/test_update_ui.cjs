@@ -26,7 +26,7 @@ function consolePage(){
   }
   const data = {update_target:{mode:'portable',path:'C:\\test\\<operator>'},
     local_update:{current:'2.4.0',latest:'2.4.1', auto:true, supported:true, available:true, state:'idle'}};
-  const pub = {can_add_network:true, configured:false, logged:false, admin_any:false, networks:[], me:{name:'unit',id:'1'}};
+  const pub = {can_add_network:true, configured:false, logged:false, admin_any:false, networks:[], service:{installed:false}, me:{name:'unit',id:'1'}};
   const context = vm.createContext({
     AbortController, queueMicrotask, setInterval(){}, setTimeout(){}, clearTimeout(){},
     Date:class extends Date { static now(){return now} },
@@ -81,4 +81,30 @@ test('unchanged progress reports its age and the disconnected banner forgets the
   await ui.refresh();
   assert.ok(ui.id('updBanner').classList.contains('hide'));
   assert.match(ui.id('welcomeUpdateStatus').textContent, /2\.4\.1/);
+});
+
+test('first-run service setup requires a prepared copy and a new local confirmation', async () => {
+  const ui = consolePage(); await settle();
+  const button = ui.id('welcomeSvcBtn');
+  const guide = ui.id('welcomeSvcGuide');
+  const route = '/api/service';
+  const path = 'C:\\Program Files\\RemoteDesk';
+  ui.data.service_setup = {path, registered:false, ready:false};
+  await ui.refresh();
+  assert.ok(!ui.id('welcomeService').classList.contains('hide'));
+  assert.ok(button.classList.contains('hide'));
+  assert.ok(!guide.classList.contains('hide'));
+  await button.onclick();
+  assert.ok(!ui.calls.some(([url]) => url === route));
+  ui.data.service_setup.ready = true;
+  await ui.refresh();
+  assert.ok(!button.classList.contains('hide'));
+  assert.ok(guide.classList.contains('hide'));
+  await button.onclick(); await settle();
+  assert.ok(ui.dialogs[0].includes(path));
+  assert.deepEqual(ui.calls.filter(([url]) => url === route), [[route, {action:'install'}]]);
+  ui.data.service_setup.registered = true;
+  await ui.refresh();
+  assert.ok(button.classList.contains('hide'));
+  assert.match(ui.id('welcomeSvcTxt').textContent, /già registrato/);
 });

@@ -94,6 +94,12 @@ table.t select{padding:3px 6px;font-size:12px}
     <label class="chk"><input type="checkbox" id="welcomeAuto"> Installa gli aggiornamenti firmati quando nessuno è collegato</label>
     <div class="row"><button id="welcomeCheck">Controlla ora</button></div>
   </div>
+  <div id="welcomeService" class="card narrow hide">
+    <h3>Servizio Windows</h3>
+    <p id="welcomeSvcTxt" class="mut"></p>
+    <a id="welcomeSvcGuide" href="https://github.com/tbkon3/remote-desk-tbk#installare-il-servizio-windows" target="_blank" rel="noopener noreferrer">Guida all’installazione</a>
+    <button id="welcomeSvcBtn" class="hide">Installa servizio</button>
+  </div>
 </section>
 
 <!-- ============ crea / entra (anche "aggiungi rete") ============ -->
@@ -221,9 +227,9 @@ table.t select{padding:3px 6px;font-size:12px}
       <label class="l">Avvio con l'utente</label>
       <label class="chk"><input type="checkbox" id="autostart"> avvia RemoteDesk quando accedo a Windows</label>
       <label class="l">Servizio di sistema</label>
-      <div><div id="svcTxt" class="mut" style="margin-bottom:8px"></div><button id="svcBtn">Installa servizio</button></div>
+      <div><div id="svcTxt" class="mut" style="margin-bottom:8px"></div><a id="svcGuide" class="hide" href="https://github.com/tbkon3/remote-desk-tbk#installare-il-servizio-windows" target="_blank" rel="noopener noreferrer">Guida all’installazione</a><button id="svcBtn">Installa servizio</button></div>
     </div>
-    <p class="mut" style="margin-top:12px;font-size:13px">La modalita' servizio (consigliata sui PC da assistere) fa partire RemoteDesk con Windows anche senza nessun utente collegato e abilita <b>Ctrl+Alt+Canc</b>, finestre <b>UAC</b> e <b>schermata di accesso</b>. Richiede i diritti di amministratore di Windows; estrai prima il pacchetto in una cartella fissa (es. <code>C:\RemoteDesk</code>).</p>
+    <p class="mut" style="margin-top:12px;font-size:13px">Il servizio avvia RemoteDesk con Windows anche prima dell’accesso di un utente. L’installazione richiede la conferma di un amministratore Windows.</p>
   </div>
   <div class="card">
     <h3>Aggiornamenti</h3>
@@ -312,6 +318,8 @@ function render(){
   if (!P.configured) {
     show('welcome'); $('clonedWarn').classList.toggle('hide', !P.cloned); $('wBack').classList.add('hide');
     $('wTitle').textContent = 'Benvenuto in RemoteDesk'; $('wSub').textContent = 'Questo PC non fa ancora parte di nessuna rete. Cosa vuoi fare?';
+    $('welcomeService').classList.toggle('hide', !localUpdate?.service_setup);
+    if (localUpdate?.service_setup) renderService('welcomeSvcTxt', 'welcomeSvcBtn', 'welcomeSvcGuide');
     return;
   }
   if (!P.logged) {
@@ -377,6 +385,7 @@ function clearUpdateDetails(){
   localUpdate = observation = null;
   $('updBanner').replaceChildren(); $('updBanner').classList.add('hide');
   $('welcomeUpdates').classList.add('hide');
+  $('welcomeService').classList.add('hide');
   for (const id of ['welcomeTarget','welcomeUpdateStatus','updTxt','updateTarget']) $(id).textContent = '';
 }
 function renderUpdate(){
@@ -547,6 +556,7 @@ function openForm(mode){
   formMode = mode || 'choose';
   if (formMode === 'choose') {
     formMode = null; show('welcome'); $('nav').classList.add('hide'); view = 'welcome-add';
+    $('welcomeService').classList.add('hide');
     $('wTitle').textContent = 'Aggiungi una rete'; $('wSub').textContent = "Questo PC restera' anche nelle reti attuali.";
     $('wBack').classList.remove('hide'); $('clonedWarn').classList.add('hide'); return;
   }
@@ -730,7 +740,28 @@ $('aCsv').onclick = () => {
 };
 
 // ---------------- impostazioni locali
-let filled = false;
+let filled = false, requestingService = false;
+
+function renderService(label, button, guide){
+  const setup = localUpdate?.service_setup;
+  $(guide).classList.toggle('hide', !setup || setup.ready || setup.registered);
+  if (setup) {
+    $(label).textContent = setup.registered ? 'Il servizio è già registrato. Apri la console dalla sua icona.' :
+      setup.ready ? 'La copia per il servizio è in ' + setup.path :
+      'Estrai il pacchetto ufficiale verificato di RemoteDesk ' + P.version + ' in ' + setup.path;
+    const canRemove = setup.registered && P.service.installed;
+    $(button).textContent = canRemove ? 'Rimuovi servizio' : 'Installa servizio';
+    $(button).classList.toggle('hide', !canRemove && (!setup.ready || setup.registered));
+    $(button).disabled = requestingService;
+    return;
+  }
+  $(label).textContent = P.service.active ? 'Installato e attivo.' :
+    P.service.installed ? 'Rimuovi il servizio dal menu dell’icona RemoteDesk.' : 'Disponibile solo su Windows.';
+  $(button).classList.toggle('hide', !P.service.installed);
+  $(button).textContent = 'Rimuovi servizio';
+  $(button).disabled = requestingService || P.service.active;
+}
+
 function renderSettings(){
   if (!filled) {
     filled = true;
@@ -745,10 +776,7 @@ function renderSettings(){
   $('turnSecret').placeholder = S.turn_secret_set ? 'Segreto impostato' : 'Almeno 32 byte';
   $('clearSecret').disabled = !S.turn_secret_set;
   const portable = localUpdate?.update_target?.mode === 'portable';
-  $('svcTxt').textContent = portable ? 'Questa copia portabile si avvia dalla propria cartella.' : !P.service.supported ? 'Disponibile solo su Windows.' :
-     P.service.installed ? (P.service.active ? 'Installato e attivo.' : 'Installato (in avvio...).') : 'Non installato.';
-  $('svcBtn').textContent = P.service.installed ? 'Rimuovi servizio' : 'Installa servizio';
-  $('svcBtn').disabled = !P.service.supported;
+  renderService('svcTxt', 'svcBtn', 'svcGuide');
   $('autostart').checked = S.autostart || P.service.installed;
   $('autostart').disabled = portable || P.platform !== 'win32' || P.service.installed;
   $('ver').textContent = 'RemoteDesk ' + P.version;
@@ -785,11 +813,23 @@ $('clearSecret').onclick = async () => {
   const r = await post('/api/settings', {turn_secret:''}); toast(r.error || 'Segreto rimosso'); refresh();
 };
 $('autostart').onchange = async () => { const r = await post('/api/autostart', {on:$('autostart').checked}); if (r.error) toast(r.error); refresh() };
-$('svcBtn').onclick = async () => {
-  const install = !P.service.installed;
-  if (!confirm(install ? 'Installare il servizio di sistema? Windows chiedera\' la conferma da amministratore.' : 'Rimuovere il servizio di sistema?')) return;
-  const r = await post('/api/service', {action: install ? 'install' : 'uninstall'});
-  toast(r.error || 'Operazione avviata: conferma la richiesta di Windows', 6000);
+for (const id of ['svcBtn', 'welcomeSvcBtn']) $(id).onclick = async () => {
+  const setup = localUpdate?.service_setup;
+  const install = setup?.ready && !setup.registered;
+  if (requestingService || (!install && !P.service.installed)) return;
+  if (!confirm(install ? 'Installare il servizio dalla copia in ' + setup.path + '? Windows chiederà la conferma di un amministratore.' : 'Rimuovere il servizio di sistema?')) return;
+  requestingService = true;
+  $(id).disabled = true;
+  try {
+    const r = await post('/api/service', {action: install ? 'install' : 'uninstall'});
+    toast(r.error || 'Richiesta inviata a Windows. Controlla l’esito nella finestra di RemoteDesk.', 6000);
+  } catch {
+    toast('Contatto interrotto. Verifica l’esito nella finestra di RemoteDesk prima di riprovare.');
+  } finally {
+    requestingService = false;
+    $(id).disabled = false;
+    refresh();
+  }
 };
 
 document.addEventListener('click', async ev => {

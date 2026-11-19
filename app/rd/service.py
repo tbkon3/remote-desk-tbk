@@ -6,13 +6,14 @@ Cosi' l'agente vede e controlla anche la schermata di accesso, UAC e puo' inviar
 Ctrl+Alt+Canc. Se l'utente cambia (logout/login) l'agente viene rilanciato."""
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
 from xml.sax.saxutils import escape
 
-from .common import APP_DIR, INSTALL_DIR, PROGRAM_DATA, ROOT_DIR, WINDOWS_ANCESTOR_POLICY, secure_dir
+from .common import APP_DIR, INSTALL_DIR, PROGRAM_DATA, ROOT_DIR, VERSION, WINDOWS_ANCESTOR_POLICY, secure_dir
 from .updater import plain_path, system_tool
 
 log = logging.getLogger("rd.service")
@@ -43,6 +44,8 @@ def elevate(action, user_data=None):
         raise ValueError("operazione servizio non valida")
     try:
         _verify_installation()
+        if action == "--install-service" and not installation_ready():
+            raise RuntimeError(f"Predisporre RemoteDesk {VERSION} in {INSTALL_DIR}")
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         W.message_box(str(exc))
         return False
@@ -54,6 +57,22 @@ def installed_paths():
     """Percorsi della copia protetta in Program Files usata dal servizio."""
     pyw = os.path.join(INSTALL_DIR, "runtime", "pythonw.exe")
     return pyw, os.path.join(INSTALL_DIR, "app", "remotedesk.py"), os.path.join(INSTALL_DIR, "RemoteDesk.exe")
+
+
+def installation_ready():
+    """Recognize the matching release before offering service setup. The ACL check still runs before elevation."""
+    try:
+        pyw, entry, launcher = installed_paths()
+        if not all(plain_path(path).is_file() for path in (pyw, entry, launcher)):
+            return False
+        version_file = plain_path(os.path.join(os.path.dirname(entry), "rd", "common.py"))
+        if not version_file.is_file():
+            return False
+        with version_file.open("rb") as source:
+            match = re.search(rb'^VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"\r?$', source.read(4096), re.MULTILINE)
+        return bool(match and match[1] == VERSION.encode("ascii"))
+    except OSError:
+        return False
 
 
 def _verify_installation():

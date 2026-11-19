@@ -33,13 +33,28 @@ Se manca corrente durante la sostituzione e il programma non si apre, conserva l
 
 Se la console 2.3.2 mostra ancora il vecchio servizio dopo un aggiornamento, puoi passare direttamente al portabile estraendo lo ZIP 2.4.1 in una nuova cartella. Chiudi la vecchia finestra e apri la console dall'icona della nuova copia.
 
+## Installare il servizio Windows
+
+Il servizio può partire prima dell’accesso a Windows e usa `%ProgramFiles%\RemoteDesk`. Puoi tenere la copia portabile nella cartella in cui l’hai estratta.
+
+1. Verifica lo ZIP ufficiale seguendo i passaggi sopra. Con un account amministratore Windows, estrai i file della stessa versione della console in `%ProgramFiles%\RemoteDesk`. In quella cartella devono risultare direttamente `RemoteDesk.exe`, `app` e `runtime`. Per un’installazione già presente usa la procedura di aggiornamento del servizio.
+2. Se vedi **Installa servizio** nella schermata iniziale o in **Impostazioni**, premi il pulsante e conferma la richiesta di Windows. RemoteDesk controlla i permessi della copia protetta prima di chiedere l’elevazione.
+3. Nella 2.4.1 la schermata iniziale non include ancora il pulsante. Per installare prima di configurare una rete, apri PowerShell come amministratore e avvia la copia ufficiale appena predisposta con il comando seguente.
+
+```powershell
+$rdProgramFiles = [Environment]::GetFolderPath('ProgramFiles')
+& (Join-Path $rdProgramFiles 'RemoteDesk\RemoteDesk.exe') --install-service
+```
+
+Quando Windows conferma la registrazione, apri la console dall’icona della copia installata e configura l’identità del servizio. Se esiste già un servizio, apri la sua console per verificarlo.
+
 ## Aggiornamento da 2.3.2
 
 La versione 2.4.0 usa il **protocollo 2**. **Aggiorna entrambi gli estremi** prima di aprire una nuova sessione. Pianifica una finestra con accesso locale o con il tuo strumento di distribuzione aziendale e chiudi le sessioni attive della 2.3.2.
 
 1. Conserva una copia protetta dei dati del singolo PC secondo le procedure aziendali. In modalità utente i dati si trovano in `%LOCALAPPDATA%\RemoteDesk\data`, in modalità servizio in `%ProgramData%\RemoteDesk\data`. Mantieni separati dati, identità e chiavi di ciascuna macchina.
 2. **Modalità utente.** Chiudi RemoteDesk dall'icona e usa lo stesso account Windows per l'aggiornamento. Una copia nuova può riusare il profilo precedente quando ne riconosce l'origine. Se compare un nuovo ID, registra la copia portabile nella rete e verifica il nome del PC. Aggiorna gli eventuali collegamenti che avviano la vecchia copia.
-3. **Modalità servizio.** Il servizio usa la copia in `%ProgramFiles%\RemoteDesk`. Affida all'amministratore Windows la sostituzione del pacchetto durante la manutenzione e la verifica del riavvio. Avviare un secondo eseguibile portabile lascia attiva la copia già registrata. Una prima installazione del servizio richiede che l'intero pacchetto sia predisposto nella cartella protetta da un amministratore. Apri la copia amministrata e scegli **Impostazioni → Installa servizio**. Verifica separatamente rete, identità e impostazioni della modalità servizio.
+3. **Modalità servizio.** Il servizio usa la copia in `%ProgramFiles%\RemoteDesk`. Affida all'amministratore Windows la sostituzione del pacchetto durante la manutenzione e la verifica del riavvio. Avviare un secondo eseguibile portabile lascia attiva la copia già registrata. Per una prima installazione segui [Installare il servizio Windows](#installare-il-servizio-windows). Verifica separatamente rete, identità e impostazioni della modalità servizio.
 4. Dopo il passaggio, su ogni PC la conferma locale è riattivata. File, appunti, inventario, alimentazione, blocco dell'input e Ctrl+Alt+Canc partono disabilitati. Dalla console del PC assistito il proprietario locale, con un account amministratore di rete se il PC è già iscritto, abilita le funzioni necessarie. Per i file scegli una cartella dedicata e controlla i diritti del tecnico in **Utenti e permessi**.
 5. Sul PC del tecnico apri la console della nuova versione, accedi alla rete con il suo account e aggiorna la rubrica. Sul PC assistito accedi a Windows con l'utente che riceverà la richiesta. Avvia una **nuova** sessione. L'utente locale verifica nome dell'operatore, macchina e azioni richieste, poi accetta o rifiuta. **Gestisci PC** richiede sempre questa conferma. Ripeti il controllo dei permessi anche per un utente con accesso limitato.
 
