@@ -15,7 +15,7 @@ import zlib
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 WIN = sys.platform == "win32"
 DEFAULT_PORT = 47800
 
