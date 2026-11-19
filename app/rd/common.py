@@ -99,10 +99,22 @@ def secure_dir(d, *, existing=False):
     env = {"SystemRoot": os.path.dirname(system_dir), "PATH": system_dir,
            "PSModulePath": os.path.join(os.path.dirname(shell), "Modules"), "RD_DATA_TARGET": str(target),
            "RD_DATA_EXISTING": "1" if existing else "0"}
-    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", DATA_DIRECTORY_POLICY],
+    command = "$ErrorActionPreference='Stop'\ntry {\n" + DATA_DIRECTORY_POLICY + r"""
+} catch {
+    $reason = $_.Exception.Message
+    if ($reason -notmatch '^(base|path|owner|ACE|DACL|inheritance|missing directory|reparse point|(?:ancestor|parent) (?:owner|replacement|DACL|ACE|link|mutable))$') {
+        $reason = $_.Exception.GetType().Name + ' in ' + $_.InvocationInfo.MyCommand.Name
+    }
+    [Console]::Out.WriteLine(('RDACL {0}; {1}; {2}; {3}' -f $script:aclNode,$reason,$script:aclSid,$script:aclMask))
+    exit 1
+}
+"""
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", command],
                             cwd=system_dir, env=env, timeout=120, capture_output=True, creationflags=0x08000000)
     if result.returncode:
-        raise PermissionError("Verificare proprietario, DACL e collegamenti della cartella dati del servizio")
+        lines = getattr(result, "stdout", b"").decode("ascii", errors="replace").splitlines()
+        detail = next((line[:180] for line in lines if line.startswith("RDACL ")), "codice " + str(result.returncode))
+        raise PermissionError("Verificare proprietario, DACL e collegamenti della cartella dati del servizio (" + detail + ")")
     _private_files_single_link(target)
 
 
@@ -128,16 +140,20 @@ WINDOWS_ANCESTOR_POLICY = r"""
 function Assert-TrustedAncestry([string]$p) {
 $systemOwners = @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 while ($p) {
+    $script:aclNode = if ($p -eq [IO.Path]::GetPathRoot($p)) { 'volume' } else { 'system parent' }
     $obj = Get-Item -LiteralPath $p -Force
     if (!$obj.PSIsContainer -or ($obj.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'base' }
     $sd = Get-Acl -LiteralPath $p
-    if ($systemOwners -notcontains $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'ancestor owner' }
+    $script:aclSid = $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($systemOwners -notcontains $script:aclSid) { throw 'ancestor owner' }
     $raw = [Security.AccessControl.RawSecurityDescriptor]::new($sd.GetSecurityDescriptorBinaryForm(), 0)
     if ($null -eq $raw.DiscretionaryAcl) { throw 'ancestor DACL' }
     foreach ($ace in $raw.DiscretionaryAcl) {
         if (([int]$ace.AceFlags -band 8) -or $ace.AceType -eq 'AccessDenied') { continue }
         if ($ace.AceType -ne 'AccessAllowed') { throw 'ancestor ACE' }
         if (($systemOwners -notcontains $ace.SecurityIdentifier.Value) -and ($ace.AccessMask -band 0x500D0150)) {
+            $script:aclSid = $ace.SecurityIdentifier.Value
+            $script:aclMask = '{0:X8}' -f $ace.AccessMask
             throw 'ancestor replacement'
         }
     }
@@ -149,10 +165,12 @@ while ($p) {
 
 WINDOWS_PRIVATE_DIRECTORY_POLICY = r"""
 function Inspect-DataParent([string]$p) {
+    $script:aclNode = 'app parent'
     $item = Get-Item -LiteralPath $p -Force
     if (!$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'parent link' }
     $acl = Get-Acl -LiteralPath $p
-    if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'parent owner' }
+    $script:aclSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($trusted -notcontains $script:aclSid) { throw 'parent owner' }
     $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
     if ($null -eq $raw.DiscretionaryAcl) { throw 'parent DACL' }
     foreach ($ace in $raw.DiscretionaryAcl) {
@@ -161,20 +179,31 @@ function Inspect-DataParent([string]$p) {
         if ($trusted -contains $ace.SecurityIdentifier.Value) { continue }
         if (([int]$ace.AceFlags -band 8) -and $ace.SecurityIdentifier.Value -eq 'S-1-3-0') { continue }
         # GENERIC_READ, GENERIC_EXECUTE, READ_CONTROL, SYNCHRONIZE e lettura/attraversamento.
-        if ($ace.AccessMask -band (-bnot 0xA01200A9)) { throw 'parent mutable' }
+        if ($ace.AccessMask -band (-bnot 0xA01200A9)) {
+            $script:aclSid = $ace.SecurityIdentifier.Value
+            $script:aclMask = '{0:X8}' -f $ace.AccessMask
+            throw 'parent mutable'
+        }
     }
 }
 function Inspect([string]$p) {
+    $script:aclNode = if ($p -eq $env:RD_DATA_TARGET) { 'data root' } elseif ($p -match '\\runtime\\') { 'runtime' } else { 'data child' }
+    if ([IO.Path]::GetExtension($p) -eq '.pyc') { $script:aclNode = 'bytecode' }
     $obj = Get-Item -LiteralPath $p -Force
     if ($obj.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'reparse point' }
     $sd = Get-Acl -LiteralPath $p
-    if ($trusted -notcontains $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'owner' }
+    $script:aclSid = $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($trusted -notcontains $script:aclSid) { throw 'owner' }
     $raw = [Security.AccessControl.RawSecurityDescriptor]::new($sd.GetSecurityDescriptorBinaryForm(), 0)
     if ($null -eq $raw.DiscretionaryAcl) { throw 'DACL' }
     $inherits = @{}
     foreach ($ace in $raw.DiscretionaryAcl) {
         if ($ace.AceType -eq 'AccessDenied') { continue }
-        if ($ace.AceType -ne 'AccessAllowed' -or ($trusted -notcontains $ace.SecurityIdentifier.Value)) { throw 'ACE' }
+        if ($ace.AceType -ne 'AccessAllowed' -or ($trusted -notcontains $ace.SecurityIdentifier.Value)) {
+            $script:aclSid = $ace.SecurityIdentifier.Value
+            $script:aclMask = '{0:X8}' -f $ace.AccessMask
+            throw 'ACE'
+        }
         if (([int]$ace.AceFlags -band 7) -eq 3 -and ($ace.AccessMask -band 0x1f01ff) -eq 0x1f01ff) {
             $inherits[$ace.SecurityIdentifier.Value] = $true
         }
