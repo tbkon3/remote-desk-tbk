@@ -37,7 +37,7 @@ Se la console 2.3.2 mostra ancora il vecchio servizio dopo un aggiornamento, puo
 
 Il servizio può partire prima dell’accesso a Windows e usa `%ProgramFiles%\RemoteDesk`. Puoi tenere la copia portabile nella cartella in cui l’hai estratta.
 
-1. Verifica lo ZIP ufficiale seguendo i passaggi sopra. Con un account amministratore Windows, estrai i file in `%ProgramFiles%\RemoteDesk`. In quella cartella devono risultare direttamente `RemoteDesk.exe`, `app` e `runtime`. Per un’installazione già presente usa la procedura di aggiornamento del servizio.
+1. Verifica lo ZIP ufficiale seguendo i passaggi sopra. Con un account amministratore Windows, estrai i file della stessa versione della console in `%ProgramFiles%\RemoteDesk`. In quella cartella devono risultare direttamente `RemoteDesk.exe`, `app` e `runtime`. Per un’installazione già presente usa la procedura di aggiornamento del servizio.
 2. Se vedi **Installa servizio** nella schermata iniziale o in **Impostazioni**, premi il pulsante e conferma la richiesta di Windows. RemoteDesk controlla i permessi della copia protetta prima di chiedere l’elevazione.
 3. Nella 2.4.1 la schermata iniziale non include ancora il pulsante. Per installare prima di configurare una rete, apri PowerShell come amministratore e avvia la copia ufficiale appena predisposta con il comando seguente.
 

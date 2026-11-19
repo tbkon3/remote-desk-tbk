@@ -132,6 +132,10 @@ class WebAuthIntegration(unittest.IsolatedAsyncioTestCase):
         self.agent.portable, self.agent.service_mode, self.agent.nets = True, False, {}
         setup_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         paths = tuple(setup_dir / name for name in ("pythonw.exe", "remotedesk.py", "RemoteDesk.exe"))
+        rd = setup_dir / "rd"
+        rd.mkdir()
+        version_file = rd / "common.py"
+        from rd import service
         registered = self.enterContext(patch("rd.web.service_installed", return_value=False))
         self.enterContext(patch("rd.web.WIN", True))
         self.enterContext(patch("rd.web.INSTALL_DIR", str(setup_dir)))
@@ -145,6 +149,9 @@ class WebAuthIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIn(str(setup_dir), json.loads(result.text)["error"])
         for path in paths:
             path.touch()
+        version_file.write_text('VERSION = "2.3.2"\n', encoding="utf-8")
+        self.assertEqual((await self.dispatch("POST", install, owner, body)).status, 409)
+        version_file.write_text(f'VERSION = "{service.VERSION}"\n', encoding="utf-8")
         registered.return_value = True
         self.assertEqual((await self.dispatch("POST", install, owner, body)).status, 409)
         self.assertEqual((await self.dispatch("POST", install, owner, {"action": "uninstall"})).status, 403)

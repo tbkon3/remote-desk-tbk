@@ -748,7 +748,7 @@ function renderService(label, button, guide){
   if (setup) {
     $(label).textContent = setup.registered ? 'Il servizio è già registrato. Apri la console dalla sua icona.' :
       setup.ready ? 'La copia per il servizio è in ' + setup.path :
-      'Estrai il pacchetto ufficiale verificato in ' + setup.path;
+      'Estrai il pacchetto ufficiale verificato di RemoteDesk ' + P.version + ' in ' + setup.path;
     const canRemove = setup.registered && P.service.installed;
     $(button).textContent = canRemove ? 'Rimuovi servizio' : 'Installa servizio';
     $(button).classList.toggle('hide', !canRemove && (!setup.ready || setup.registered));

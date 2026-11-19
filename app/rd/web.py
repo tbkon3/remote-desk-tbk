@@ -138,7 +138,7 @@ def make_app(agent, port, on_quit):
         if not WIN or agent.service_mode:
             return None
         return {"path": INSTALL_DIR, "registered": service_installed(),
-                "ready": all(os.path.isfile(path) for path in svc.installed_paths())}
+                "ready": svc.installation_ready()}
 
     def local_update_status():
         return {"update_target": update_target(), "local_update": agent.updater.status(),
@@ -533,7 +533,7 @@ def make_app(agent, port, on_quit):
                     return web.json_response({"error": "Il servizio è già registrato. Apri la console dalla sua icona."},
                                              status=409)
                 if not setup["ready"]:
-                    return web.json_response({"error": "Estrai il pacchetto ufficiale verificato in " + setup["path"]},
+                    return web.json_response({"error": f"Estrai il pacchetto ufficiale verificato di RemoteDesk {VERSION} in " + setup["path"]},
                                              status=409)
             flag = "--install-service" if action == "install" else "--uninstall-service"
             ok = await asyncio.to_thread(svc.elevate, flag)
