@@ -192,8 +192,8 @@ class Updater:
         # il programma di aggiornamento chiudera' questo processo: avviso le sessioni e mi fermo
         try:
             for s in list(self.agent.sessions.values()):
-                s.send({"t": "notice", "text": f"Il PC remoto si sta aggiornando a RemoteDesk {info['version']}: "
-                                               "la sessione si ricollega da sola tra poco."})
+                s.send({"t": "notice", "reason": "update", "text": f"Il PC remoto si aggiorna a RemoteDesk {info['version']}. "
+                         "La sessione verrà interrotta. Per ricollegarti servono versioni compatibili e un accesso valido alla rete."})
         finally:
             self.agent.updating = True
             self.agent.stop_event.set()

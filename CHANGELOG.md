@@ -1,11 +1,13 @@
-# Novita'
+# Note di versione
 
-## 2.4.0 · sorgenti in revisione
+## 2.4.0
 
-- Sessioni protocollo 2 con verifica di operatore e dispositivo, rinnovo a scadenza e controllo dei permessi sul PC assistito.
-- Inventario Windows in sola lettura e collegamento al portale Intune. Appunti manuali, chat per tecnico e cartella file confinata.
-- Configurazione di STUN, TURN/TLS e credenziali temporanee coturn. Indicazione del percorso ICE durante la sessione.
-- Protezioni del servizio, della console locale e degli aggiornamenti. Migrazione e collaudo tra due reti descritti nel README.
+- Il protocollo 2 autentica l'operatore e il dispositivo e rinnova le autorizzazioni durante la sessione. Per migrare dalla 2.3.2 chiudi le sessioni precedenti, aggiorna entrambi i PC, accedi dalla nuova console e apri una nuova richiesta sul PC assistito.
+- Gestisci PC permette di consultare condivisioni, unità mappate, servizi e applicazioni Windows. Occorrono il diritto Inventario, l'abilitazione sul PC e la conferma dell'utente locale. Dalla scheda Applicazioni il tecnico può aprire Microsoft Intune per le assegnazioni aziendali.
+- La cartella condivisa separa lettura, scrittura ed eliminazione. Appunti di testo su richiesta, chat con scelta del destinatario e azioni di manutenzione con permessi espliciti anche per gli amministratori.
+- Al primo passaggio alla 2.4.0 si riattiva la conferma locale. File, appunti, inventario e azioni privilegiate richiedono una nuova abilitazione sul PC assistito.
+- Le sessioni mostrano il percorso ICE effettivo diretto o via TURN quando disponibile. La configurazione supporta TURN/TLS e credenziali coturn temporanee. Un test Linux usa due peer WebRTC e un relay TLS su loopback.
+- Controlli aggiuntivi per l'identità della console locale, le cartelle e l'attività Windows del servizio e la verifica dei pacchetti di aggiornamento. Il README descrive la migrazione della copia portabile e della copia in Program Files.
 
 ## 2.3.2
 - Corretto: "Esci" dall'icona nella barra non chiudeva RemoteDesk. Ora l'icona sparisce subito, le sessioni vengono

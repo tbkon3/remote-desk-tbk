@@ -309,11 +309,14 @@ def make_app(agent, port, on_quit):
         if to not in n.reg.machines() or to == cfg["id"] or right not in n.reg.rights(lg["user"], to):
             raise web.HTTPForbidden(text='{"error":"Operazione non autorizzata su questa macchina"}',
                                     content_type="application/json")
+        if "expected_pub" in b and b["expected_pub"] != machines[to].get("pub"):
+            raise web.HTTPConflict(text='{"error":"Identità del PC cambiata. Verifica il dispositivo nella rubrica."}',
+                                   content_type="application/json")
         peer = n.machines.get(to) or {}
         if peer.get("pub") != machines[to].get("pub"):
             raise web.HTTPConflict(text='{"error":"In attesa della presenza firmata del PC"}', content_type="application/json")
         if not n.is_online(to):
-            raise web.HTTPConflict(text='{"error":"PC offline. Aggiorna la rubrica e riprova."}',
+            raise web.HTTPConflict(text='{"code":"peer_offline","error":"PC offline. Aggiorna la rubrica e riprova."}',
                                    content_type="application/json")
         if peer.get("session_protocol") != auth.SESSION_PROTOCOL:
             raise web.HTTPConflict(text='{"error":"Aggiorna RemoteDesk sul PC remoto per aprire una sessione."}',
@@ -324,8 +327,16 @@ def make_app(agent, port, on_quit):
         return n, lg, to, mode
 
     async def session_ice(req):
-        session_target(req, await req.json())
-        return web.json_response({"ice": agent.ice_for_browser()})
+        net, _, target, _ = session_target(req, await req.json())
+        peer = net.machines[target]
+        result = {"ice": agent.ice_for_browser()}
+        stamp = peer.get("signed_at")
+        if type(stamp) is int and 0 < stamp < 2**53:
+            result.update(peer_presence=stamp, peer_pub=peer["pub"])
+            version = peer.get("ver")
+            if isinstance(version, str) and re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", version):
+                result["peer_version"] = version
+        return web.json_response(result)
 
     async def connect(req):
         b = await req.json()

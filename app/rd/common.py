@@ -78,10 +78,14 @@ def pick_data_dir(override=None, service=False):
     return user_data_dir()
 
 
-def secure_dir(d):
+def secure_dir(d, *, existing=False):
     if not WIN:
-        os.makedirs(d, mode=0o700, exist_ok=True)
-        os.chmod(d, 0o700)
+        if existing:
+            if not os.path.isdir(d):
+                raise FileNotFoundError(d)
+        else:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            os.chmod(d, 0o700)
         return
     from pathlib import Path
     import subprocess
@@ -93,11 +97,25 @@ def secure_dir(d):
     shell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
     system_dir = os.path.dirname(system_tool("whoami.exe"))
     env = {"SystemRoot": os.path.dirname(system_dir), "PATH": system_dir,
-           "PSModulePath": os.path.join(os.path.dirname(shell), "Modules"), "RD_DATA_TARGET": str(target)}
-    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", DATA_DIRECTORY_POLICY],
+           "PSModulePath": os.path.join(os.path.dirname(shell), "Modules"), "RD_DATA_TARGET": str(target),
+           "RD_COMMON_ROOT": str(root.parent),
+           "RD_DATA_EXISTING": "1" if existing else "0"}
+    command = "$ErrorActionPreference='Stop'\ntry {\n" + DATA_DIRECTORY_POLICY + r"""
+} catch {
+    $reason = $_.Exception.Message
+    if ($reason -notmatch '^(base|path|owner|ACE|DACL|inheritance|missing directory|reparse point|(?:ancestor|parent) (?:owner|replacement|DACL|ACE|link|mutable))$') {
+        $reason = $_.Exception.GetType().Name + ' in ' + $_.InvocationInfo.MyCommand.Name
+    }
+    [Console]::Out.WriteLine(('RDACL {0}; {1}; {2}; {3}' -f $script:aclNode,$reason,$script:aclSid,$script:aclMask))
+    exit 1
+}
+"""
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", command],
                             cwd=system_dir, env=env, timeout=120, capture_output=True, creationflags=0x08000000)
     if result.returncode:
-        raise PermissionError("Verificare proprietario, DACL e collegamenti della cartella dati del servizio")
+        lines = getattr(result, "stdout", b"").decode("ascii", errors="replace").splitlines()
+        detail = next((line[:180] for line in lines if line.startswith("RDACL ")), "codice " + str(result.returncode))
+        raise PermissionError("Verificare proprietario, DACL e collegamenti della cartella dati del servizio (" + detail + ")")
     _private_files_single_link(target)
 
 
@@ -120,19 +138,50 @@ def _private_files_single_link(target):
 WINDOWS_ANCESTOR_POLICY = r"""
 # Un diritto DeleteChild sul padre prevale sul permesso Delete del figlio.
 # Su ProgramData Windows consente normalmente di creare nuove sottocartelle.
-function Assert-TrustedAncestry([string]$p) {
+function Test-NonemptyNtfsDataRoot([string]$dir, $owners) {
+    # Su NTFS un reparse point su una directory richiede che sia vuota.
+    # Un figlio esistente e non rimovibile la mantiene non vuota anche dopo il controllo.
+    if ([IO.DriveInfo]::new([IO.Path]::GetPathRoot($dir)).DriveFormat -ne 'NTFS') { return $false }
+    foreach ($name in 'RemoteDesk','Microsoft') {
+        $child = [IO.Path]::Combine($dir,$name)
+        $item = Get-Item -LiteralPath $child -Force -ErrorAction SilentlyContinue
+        if (!$item -or !$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        $acl = Get-Acl -LiteralPath $child
+        if ($owners -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { continue }
+        $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+        if ($null -eq $raw.DiscretionaryAcl) { continue }
+        $safe = $true
+        foreach ($entry in $raw.DiscretionaryAcl) {
+            if (([int]$entry.AceFlags -band 8) -or $entry.AceType -eq 'AccessDenied') { continue }
+            if ($entry.AceType -ne 'AccessAllowed' -or
+                (($owners -notcontains $entry.SecurityIdentifier.Value) -and ($entry.AccessMask -band 0x500D0150))) {
+                $safe = $false
+                break
+            }
+        }
+        if ($safe) { return $true }
+    }
+    return $false
+}
+function Assert-TrustedAncestry([string]$p, [string]$stockDataRoot = '') {
 $systemOwners = @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 while ($p) {
+    $script:aclNode = if ($p -eq [IO.Path]::GetPathRoot($p)) { 'volume' } else { 'system parent' }
     $obj = Get-Item -LiteralPath $p -Force
     if (!$obj.PSIsContainer -or ($obj.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'base' }
     $sd = Get-Acl -LiteralPath $p
-    if ($systemOwners -notcontains $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'ancestor owner' }
+    $script:aclSid = $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($systemOwners -notcontains $script:aclSid) { throw 'ancestor owner' }
     $raw = [Security.AccessControl.RawSecurityDescriptor]::new($sd.GetSecurityDescriptorBinaryForm(), 0)
     if ($null -eq $raw.DiscretionaryAcl) { throw 'ancestor DACL' }
     foreach ($ace in $raw.DiscretionaryAcl) {
         if (([int]$ace.AceFlags -band 8) -or $ace.AceType -eq 'AccessDenied') { continue }
         if ($ace.AceType -ne 'AccessAllowed') { throw 'ancestor ACE' }
         if (($systemOwners -notcontains $ace.SecurityIdentifier.Value) -and ($ace.AccessMask -band 0x500D0150)) {
+            if ($p -eq $stockDataRoot -and $ace.SecurityIdentifier.Value -eq 'S-1-5-32-545' -and
+                $ace.AccessMask -eq 0x116 -and (Test-NonemptyNtfsDataRoot $p $systemOwners)) { continue }
+            $script:aclSid = $ace.SecurityIdentifier.Value
+            $script:aclMask = '{0:X8}' -f $ace.AccessMask
             throw 'ancestor replacement'
         }
     }
@@ -143,17 +192,46 @@ while ($p) {
 
 
 WINDOWS_PRIVATE_DIRECTORY_POLICY = r"""
+function Inspect-DataParent([string]$p) {
+    $script:aclNode = 'app parent'
+    $item = Get-Item -LiteralPath $p -Force
+    if (!$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'parent link' }
+    $acl = Get-Acl -LiteralPath $p
+    $script:aclSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($trusted -notcontains $script:aclSid) { throw 'parent owner' }
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $raw.DiscretionaryAcl) { throw 'parent DACL' }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+        if ($ace.AceType -eq 'AccessDenied') { continue }
+        if ($ace.AceType -ne 'AccessAllowed') { throw 'parent ACE' }
+        if ($trusted -contains $ace.SecurityIdentifier.Value) { continue }
+        if (([int]$ace.AceFlags -band 8) -and $ace.SecurityIdentifier.Value -eq 'S-1-3-0') { continue }
+        # GENERIC_READ, GENERIC_EXECUTE, READ_CONTROL, SYNCHRONIZE e lettura/attraversamento.
+        if ($ace.AccessMask -band (-bnot 0xA01200A9)) {
+            $script:aclSid = $ace.SecurityIdentifier.Value
+            $script:aclMask = '{0:X8}' -f $ace.AccessMask
+            throw 'parent mutable'
+        }
+    }
+}
 function Inspect([string]$p) {
+    $script:aclNode = if ($p -eq $env:RD_DATA_TARGET) { 'data root' } elseif ($p -match '\\runtime\\') { 'runtime' } else { 'data child' }
+    if ([IO.Path]::GetExtension($p) -eq '.pyc') { $script:aclNode = 'bytecode' }
     $obj = Get-Item -LiteralPath $p -Force
     if ($obj.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'reparse point' }
     $sd = Get-Acl -LiteralPath $p
-    if ($trusted -notcontains $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'owner' }
+    $script:aclSid = $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($trusted -notcontains $script:aclSid) { throw 'owner' }
     $raw = [Security.AccessControl.RawSecurityDescriptor]::new($sd.GetSecurityDescriptorBinaryForm(), 0)
     if ($null -eq $raw.DiscretionaryAcl) { throw 'DACL' }
     $inherits = @{}
     foreach ($ace in $raw.DiscretionaryAcl) {
         if ($ace.AceType -eq 'AccessDenied') { continue }
-        if ($ace.AceType -ne 'AccessAllowed' -or ($trusted -notcontains $ace.SecurityIdentifier.Value)) { throw 'ACE' }
+        if ($ace.AceType -ne 'AccessAllowed' -or ($trusted -notcontains $ace.SecurityIdentifier.Value)) {
+            $script:aclSid = $ace.SecurityIdentifier.Value
+            $script:aclMask = '{0:X8}' -f $ace.AccessMask
+            throw 'ACE'
+        }
         if (([int]$ace.AceFlags -band 7) -eq 3 -and ($ace.AccessMask -band 0x1f01ff) -eq 0x1f01ff) {
             $inherits[$ace.SecurityIdentifier.Value] = $true
         }
@@ -165,13 +243,13 @@ function Inspect([string]$p) {
 
 DATA_DIRECTORY_POLICY = WINDOWS_ANCESTOR_POLICY + r"""
 $ErrorActionPreference = 'Stop'
-$common = [Environment]::GetFolderPath('CommonApplicationData')
+$common = $env:RD_COMMON_ROOT
 $base = Join-Path $common 'RemoteDesk'
 $trusted = @('S-1-5-18','S-1-5-32-544')
 $acl = [Security.AccessControl.DirectorySecurity]::new()
 $acl.SetSecurityDescriptorSddlForm('O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
 """ + WINDOWS_PRIVATE_DIRECTORY_POLICY + r"""
-Assert-TrustedAncestry $common
+Assert-TrustedAncestry $common $common
 $dirs = @()
 $p = $env:RD_DATA_TARGET
 while ($p -ne $base) {
@@ -180,8 +258,11 @@ while ($p -ne $base) {
     if (!$p) { throw 'path' }
 }
 foreach ($p in (@($base) + $dirs)) {
-    if (![IO.Directory]::Exists($p)) { [void][IO.Directory]::CreateDirectory($p, $acl) }
-    Inspect $p
+    if (![IO.Directory]::Exists($p)) {
+        if ($env:RD_DATA_EXISTING -eq '1') { throw 'missing directory' }
+        [void][IO.Directory]::CreateDirectory($p, $acl)
+    }
+    if ($p -eq $base) { Inspect-DataParent $p } else { Inspect $p }
 }
 $queue = [Collections.Generic.Stack[string]]::new()
 $queue.Push($env:RD_DATA_TARGET)

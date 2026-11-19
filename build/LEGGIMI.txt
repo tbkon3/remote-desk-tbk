@@ -1,134 +1,104 @@
-﻿REMOTEDESK 2.3.2 - accesso remoto tra le tue macchine, senza server propri
-=========================================================================
+REMOTEDESK 2.4.0 PER WINDOWS 64 BIT
 
-CONTENUTO
-  RemoteDesk.exe   avvia il programma (icona nella barra + console)
-  runtime\         Python per Windows gia' incluso: non serve installare nulla
-  app\             il programma
-  I dati (identita' del PC, reti, chiavi, registro) NON stanno in questa cartella:
-    modalita' utente:   %LOCALAPPDATA%\RemoteDesk\data   (privata dell'utente)
-    modalita' servizio: C:\ProgramData\RemoteDesk\data  (solo SYSTEM e Amministratori)
+Questo pacchetto contiene RemoteDesk.exe, il runtime Python per Windows e la
+cartella app. Estrai su ogni PC una copia dello ZIP originale. Conserva i dati e
+le chiavi di ciascuna postazione nel relativo profilo.
 
-IMPORTANTE: su ogni PC estrai lo ZIP ORIGINALE. Non copiare la cartella
-RemoteDesk da un PC gia' configurato (se lo fai, RemoteDesk se ne accorge e
-crea comunque una nuova identita' per il PC, ma dovrai aggiungerlo alla rete).
+PRIMA DI AVVIARE
 
-PRIMA INSTALLAZIONE (primo PC, il tuo)
-  1. Estrai lo zip in una cartella fissa, es.  C:\RemoteDesk
-  2. Avvia RemoteDesk.exe. Si apre la console con due scelte:
-     "Entra in una rete esistente" oppure "Crea una nuova rete".
-  3. Scegli "Crea una nuova rete": nome rete, tuo utente amministratore, password.
-  4. Annota la CHIAVE DI RETE che viene mostrata (la ritrovi nella sezione "Reti").
+Scarica RemoteDesk-2.4.0.zip e RemoteDesk-2.4.0.zip.sha256 dal canale di
+distribuzione autorizzato. In PowerShell, dalla cartella del download, esegui
 
-AGGIUNGERE UN ALTRO PC
-  1. Estrai lo zip originale sul PC, es. in C:\RemoteDesk, e avvia RemoteDesk.exe
-  2. Scegli "Entra in una rete esistente": nome rete + chiave di rete +
-     utente e password di un AMMINISTRATORE di quella rete.
-     (serve che almeno un altro PC della rete sia acceso)
-  3. Impostazioni > "Installa servizio" (consigliato sui PC da assistere):
-     parte con Windows anche senza utenti collegati e abilita Ctrl+Alt+Canc,
-     finestre UAC e schermata di accesso. Windows chiede conferma da amministratore.
-     Per sicurezza il servizio viene installato in C:\Program Files\RemoteDesk (dove
-     gli utenti normali non possono modificare i file) e parte sempre da li'.
-     Per rimuoverlo: tasto destro sull'icona di RemoteDesk > "Rimuovi servizio...".
+  Get-FileHash -Algorithm SHA256 -LiteralPath .\RemoteDesk-2.4.0.zip
+  Get-Content -LiteralPath .\RemoteDesk-2.4.0.zip.sha256
 
-PIU' RETI SULLO STESSO PC
-  Un PC puo' far parte di piu' reti contemporaneamente (es. "Ufficio" e
-  "Clienti"). Ogni rete ha chiave, utenti, permessi e registro propri e non
-  vede le altre.
-  - Aggiungere una rete: console > "Reti" > "Aggiungi una rete" (crea o entra).
-    Serve essere collegati come amministratore di una rete di questo PC, cosi'
-    nessuno puo' "regalare" il PC a una rete estranea.
-  - Accesso: si fa il login separatamente in ogni rete (utenti diversi);
-    in "Macchine" le reti in cui non hai fatto l'accesso mostrano un piccolo
-    modulo di login.
-  - Lasciare una rete: "Reti" > "Lascia rete" (se sei admin di quella rete il
-    PC viene tolto anche dal suo registro).
-  - Puoi controllare piu' macchine contemporaneamente, anche di reti diverse:
-    ogni sessione e' una finestra indipendente.
+I 64 caratteri esadecimali dei due risultati devono coincidere. In caso di
+differenze interrompi l'installazione. Se un controllo di Windows o dell'azienda
+blocca l'avvio, chiedi all'amministratore della postazione di verificare il
+pacchetto. Dopo l'avvio controlla in Impostazioni che la console riporti 2.4.0.
+La scheda Dettagli di RemoteDesk.exe riporta 2.3.2 perché il pacchetto include
+l'avviatore originale. La console mostra la versione del programma avviato.
 
-UTENTI E PERMESSI
-  Console > "Utenti e permessi" (solo amministratori, una rete alla volta):
-  - ogni utente ha nome utente e password propri (minimo 10 caratteri)
-  - per ogni macchina: nessun accesso / solo visione / visione + file /
-    solo file / controllo / controllo + file   (oppure "tutte le macchine")
-  - gli amministratori hanno accesso completo e gestiscono gli utenti
-  - le modifiche arrivano a tutte le macchine accese in pochi secondi; se togli
-    un permesso, le sessioni in corso di quell'utente vengono chiuse subito.
+PRIMO AVVIO E REGISTRAZIONE
+
+1. Estrai lo ZIP in una cartella riservata al tuo account Windows. Avvia
+   RemoteDesk.exe e apri la console dall'icona di RemoteDesk.
+2. Sul primo PC scegli "Crea una nuova rete". Crea un utente amministratore con
+   password di almeno 10 caratteri e custodisci la chiave di rete.
+3. Sul secondo PC scegli "Entra in una rete esistente". Servono nome della rete,
+   chiave e credenziali di un amministratore. Almeno un PC già iscritto deve
+   essere raggiungibile. Un tecnico accede poi con il proprio account operatore.
+
+PASSAGGIO DALLA 2.3.2
+
+La 2.4.0 usa il protocollo di sessione 2. Concorda una finestra di manutenzione,
+prevedi un accesso locale o tramite lo strumento di distribuzione aziendale
+e chiudi le sessioni 2.3.2. Aggiorna il PC del tecnico e quello assistito.
+
+1. Conserva un backup protetto dei dati di ciascuna macchina e mantienilo
+   associato a quel PC. In modalità utente il percorso è
+   %LOCALAPPDATA%\RemoteDesk\data. In modalità servizio è
+   %ProgramData%\RemoteDesk\data.
+2. In modalità utente chiudi RemoteDesk dall'icona ed estrai la 2.4.0 in una
+   nuova cartella. Avviala dallo stesso account Windows, verifica ID, reti e
+   versione nella console, poi aggiorna eventuali collegamenti di avvio.
+3. Per un servizio installato, incarica l'amministratore Windows di aggiornare
+   la copia protetta in %ProgramFiles%\RemoteDesk durante la manutenzione e di
+   verificarne il riavvio. L'avvio della sola copia portabile non aggiorna la
+   copia in esecuzione come servizio. Per una nuova installazione del servizio
+   l'amministratore deve predisporre l'intero pacchetto nella cartella protetta
+   prima di usare "Impostazioni" > "Installa servizio" e confermare in Windows.
+   Verifica a parte rete, identità e impostazioni del servizio.
+4. Alla migrazione la conferma locale è attiva. File, appunti, inventario,
+   alimentazione, blocco input e Ctrl+Alt+Canc partono disabilitati. Dalla
+   console del PC assistito il proprietario locale accede come amministratore
+   di rete e riabilita le funzioni necessarie. Per i file sceglie una cartella
+   dedicata. L'amministratore di rete assegna i diritti al tecnico in
+   "Utenti e permessi", per il PC o il gruppo di macchine desiderato.
+5. Sul PC tecnico apri la nuova console, accedi alla rete con il tuo account e
+   aggiorna la rubrica. Sul PC assistito accedi a Windows con l'utente che
+   riceverà la richiesta. Dal PC tecnico apri una nuova sessione. Chi riceve
+   la richiesta controlla operatore, macchina e operazioni, poi accetta o
+   rifiuta. "Gestisci PC" richiede sempre conferma locale.
+
+L'aggiornamento integrato propone le versioni presenti nel manifesto firmato
+dal manutentore. Lo ZIP verificato consente anche la distribuzione manuale.
 
 USO
-  In "Macchine" il pulsante "Aggiorna" chiede a tutte le macchine accese di
-  ripresentarsi; il bollino "collegato" indica una sessione aperta da questo PC.
-  Console > Macchine: le macchine accese sono in verde. "Controlla", "Guarda"
-  o "File" aprono una finestra ridimensionabile per ogni sessione.
-  Nella finestra di sessione:
-  - mouse, tastiera (anche AltGr / accentate), rotellina, trascinamento
-  - Tasti...: Ctrl+Alt+Canc, Win, Alt+Tab, Gestione attivita', Win+R ...
-  - Schermo intero: cattura anche Esc, Alt+Tab, tasto Windows
-  - Appunti: copia/incolla di testo nei due sensi
-  - File: esplora il PC remoto, scarica (anche cartelle come .zip), carica,
-    rinomina, elimina; oppure trascina file/cartelle sulla finestra
-  - PIU' SCHERMI: menu in alto con Schermo 1, Schermo 2, ...,
-      "Tutti gli schermi (una finestra)"  = tutti affiancati in un'immagine
-      "Tutti gli schermi (una finestra per schermo)" = ogni schermo remoto in
-      una finestra sua; se anche tu hai piu' monitor, Edge/Chrome chiedono il
-      permesso di "gestione finestre" e le mettono una per monitor.
-    All'avvio si vede sempre lo schermo principale del PC remoto.
-  - AUDIO: pulsante "Audio: off/on" (parte spento) per sentire il PC remoto.
-  - CHAT: pulsante "Chat". Sul PC remoto si apre una finestrella in basso a
-    destra dove l'utente legge e risponde (piu' notifica dall'icona).
-  - Invia testo, Blocca PC, blocca mouse/tastiera dell'utente, Riavvia (con il
-    servizio il PC torna raggiungibile da solo), qualita' (fino a 30 fps),
-    adatta / dimensione reale
-  - Se la connessione cade, si ricollega da sola.
 
-REGISTRO ACCESSI (solo amministratori)
-  Console > "Registro accessi" (per rete: ogni rete vede solo i propri eventi):
-  raccoglie lo storico dai PC accesi (90 giorni,
-  conservato su ogni PC): sessioni con durata, file caricati/scaricati, testo
-  degli appunti (primi 300 caratteri), login falliti e accessi negati.
-  Filtri per periodo, tipo, macchina, utente ed esportazione CSV.
-  Attenzione: il testo degli appunti puo' contenere password copiate.
+"Guarda" visualizza il desktop. "Controlla" consente mouse e tastiera. Nella
+finestra di controllo puoi attivare l'audio. I due pulsanti degli appunti
+trasferiscono testo quando li premi e la relativa funzione è consentita.
 
-SICUREZZA
-  - Le password non lasciano mai il PC: da utente+password si ricava una chiave
-    di firma (scrypt + Ed25519). Ogni connessione e' firmata dall'utente e ogni
-    risposta e' firmata dalla macchina: niente man-in-the-middle.
-  - Il registro di utenti/permessi/macchine e' firmato da un amministratore:
-    nessuno puo' aggiungersi permessi senza le credenziali di un admin.
-  - Schermo, input e file viaggiano DIRETTI tra i PC, cifrati (WebRTC DTLS-SRTP).
-  - Per farsi trovare le macchine usano insieme piu' servizi pubblici gratuiti
-    (ntfy.sh e i broker MQTT EMQX e HiveMQ): se uno e' al limite funzionano gli altri.
-    In precedenza usavano solo ntfy.sh (servizio pubblico gratuito)
-    solo come "bacheca": i messaggi sono cifrati AES-256-GCM con la chiave di
-    rete. Puoi usare un tuo server ntfy in Impostazioni > Rete.
-  - La console funziona solo su 127.0.0.1, con login e protezione anti-CSRF.
-  - Opzione "chiedi conferma" per far accettare ogni accesso all'utente del PC.
-  - Chi e' al PC remoto vede l'icona e una notifica, e puo' scollegare tutti
-    (menu dell'icona o pagina della console, anche senza login).
+"File" apre la cartella condivisa configurata sul PC assistito. Il permesso
+base offre lettura e download. Creazione e caricamento richiedono "Scrittura
+file", la cancellazione "Eliminazione file" e la rinomina entrambi i diritti.
 
-LIMITI
-  - Latenza: tipicamente 30-80 ms in rete locale, 60-150 ms su Internet (dipende
-    dalla distanza e dalla rete). Lo zero assoluto non esiste; per ridurla:
-    qualita' "Massima fluidita'", rete cablata, nessun server TURN.
-  - Video codificato via software (VP8): ottimo per assistenza e lavoro d'ufficio,
-    non adatto a giochi o video fluidi come Parsec (che usa la GPU).
-  - Audio solo dal PC remoto verso di te (niente microfono). Gli appunti
-    sincronizzano solo testo (per i file usa "File").
-  - Il registro di un PC spento si vede solo quando quel PC torna acceso.
-  - Se due reti molto chiuse non riescono a collegarsi direttamente, configura un
-    server TURN in Impostazioni > Rete.
-  - L'exe non e' firmato: Windows SmartScreen puo' chiedere "Esegui comunque".
+"Gestisci PC" mostra condivisioni, unità mappate, servizi e applicazioni di
+Windows visibili nel contesto dell'utente autorizzato. La scheda Applicazioni
+permette di aprire il portale Microsoft Intune. Il tecnico verifica tenant,
+permessi, destinatari e stato dell'assegnazione direttamente nel portale.
 
-AGGIORNAMENTI
-  Dalla 2.3 RemoteDesk controlla da solo le nuove versioni: la console mostra
-  "Aggiorna questo PC" e, sulle macchine remote vecchie, "Aggiorna". Si puo'
-  aggiornare anche un PC a cui si e' collegati: la sessione si ricollega da sola.
-  Si aggiorna anche il servizio. Vengono installati solo pacchetti firmati; se la
-  nuova versione non parte si torna da soli alla precedente.
-  Impostazioni > Aggiornamenti: "Controlla ora" e installazione automatica.
+Inventario, scrittura o eliminazione file e azioni avanzate richiedono
+permessi espliciti anche per gli amministratori. Le azioni di alimentazione,
+blocco input e Ctrl+Alt+Canc richiedono anche autorizzazione locale e controllo
+del desktop. Da "Su questo PC" l'utente può disconnettere la sessione.
 
-RIMOZIONE
-  Icona > "Rimuovi servizio...", togli la spunta all'avvio automatico, chiudi
-  dall'icona, cancella la cartella (e C:\Program Files\RemoteDesk se c'era il
-  servizio). I dati restano in %LOCALAPPDATA%\RemoteDesk e C:\ProgramData\RemoteDesk.
+TRA DUE RETI INTERNET
+
+Le due postazioni devono raggiungere almeno un relay di segnalazione comune.
+In Impostazioni puoi configurare STUN e TURN. Per TURN su TLS serve un server
+TURN raggiungibile, con un certificato valido. Un esempio di indirizzo è
+turns:turn.azienda.it:443?transport=tcp. La console locale usa il loopback.
+Durante il collaudo controlla il percorso visualizzato nella sessione, "Diretto"
+o "Via TURN". "Non determinato" indica che le statistiche disponibili non
+identificano il percorso. Fai una prova tra due connessioni indipendenti.
+
+ISTRUZIONI E ARCHIVIO
+
+Manuale 2.4.0 e note di versione
+https://github.com/tbkon3/remote-desk-tbk/blob/main/README.md
+https://github.com/tbkon3/remote-desk-tbk/blob/main/CHANGELOG.md
+
+Manuale archiviato della distribuzione 2.3.2
+https://github.com/tbkon3/remote-desk-tbk/blob/70b260c46250fdbd38cf0eaf12ceb9cacc38f897/README.md
