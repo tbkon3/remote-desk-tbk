@@ -138,7 +138,32 @@ def _private_files_single_link(target):
 WINDOWS_ANCESTOR_POLICY = r"""
 # Un diritto DeleteChild sul padre prevale sul permesso Delete del figlio.
 # Su ProgramData Windows consente normalmente di creare nuove sottocartelle.
-function Assert-TrustedAncestry([string]$p) {
+function Test-NonemptyNtfsDataRoot([string]$dir, $owners) {
+    # Su NTFS un reparse point su una directory richiede che sia vuota.
+    # Un figlio esistente e non rimovibile la mantiene non vuota anche dopo il controllo.
+    if ([IO.DriveInfo]::new([IO.Path]::GetPathRoot($dir)).DriveFormat -ne 'NTFS') { return $false }
+    foreach ($name in 'RemoteDesk','Microsoft') {
+        $child = [IO.Path]::Combine($dir,$name)
+        $item = Get-Item -LiteralPath $child -Force -ErrorAction SilentlyContinue
+        if (!$item -or !$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        $acl = Get-Acl -LiteralPath $child
+        if ($owners -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { continue }
+        $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+        if ($null -eq $raw.DiscretionaryAcl) { continue }
+        $safe = $true
+        foreach ($entry in $raw.DiscretionaryAcl) {
+            if (([int]$entry.AceFlags -band 8) -or $entry.AceType -eq 'AccessDenied') { continue }
+            if ($entry.AceType -ne 'AccessAllowed' -or
+                (($owners -notcontains $entry.SecurityIdentifier.Value) -and ($entry.AccessMask -band 0x500D0150))) {
+                $safe = $false
+                break
+            }
+        }
+        if ($safe) { return $true }
+    }
+    return $false
+}
+function Assert-TrustedAncestry([string]$p, [string]$stockDataRoot = '') {
 $systemOwners = @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 while ($p) {
     $script:aclNode = if ($p -eq [IO.Path]::GetPathRoot($p)) { 'volume' } else { 'system parent' }
@@ -153,6 +178,8 @@ while ($p) {
         if (([int]$ace.AceFlags -band 8) -or $ace.AceType -eq 'AccessDenied') { continue }
         if ($ace.AceType -ne 'AccessAllowed') { throw 'ancestor ACE' }
         if (($systemOwners -notcontains $ace.SecurityIdentifier.Value) -and ($ace.AccessMask -band 0x500D0150)) {
+            if ($p -eq $stockDataRoot -and $ace.SecurityIdentifier.Value -eq 'S-1-5-32-545' -and
+                $ace.AccessMask -eq 0x116 -and (Test-NonemptyNtfsDataRoot $p $systemOwners)) { continue }
             $script:aclSid = $ace.SecurityIdentifier.Value
             $script:aclMask = '{0:X8}' -f $ace.AccessMask
             throw 'ancestor replacement'
@@ -222,7 +249,7 @@ $trusted = @('S-1-5-18','S-1-5-32-544')
 $acl = [Security.AccessControl.DirectorySecurity]::new()
 $acl.SetSecurityDescriptorSddlForm('O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
 """ + WINDOWS_PRIVATE_DIRECTORY_POLICY + r"""
-Assert-TrustedAncestry $common
+Assert-TrustedAncestry $common $common
 $dirs = @()
 $p = $env:RD_DATA_TARGET
 while ($p -ne $base) {

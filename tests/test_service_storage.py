@@ -96,6 +96,28 @@ $script:descriptor.SetSecurityDescriptorSddlForm('O:BAD:P(A;OICI;FA;;;SY)(A;OICI
 Inspect 'C:\Synthetic\Test'
 $script:descriptor.SetSecurityDescriptorSddlForm('O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)')
 try { Inspect 'C:\Synthetic\Test'; exit 6 } catch { if ($_.Exception.Message -notmatch 'inheritance') { throw } }
+$public = 'C:\Synthetic\ProgramData'
+$baseline = [Security.AccessControl.DirectorySecurity]::new()
+$baseline.SetSecurityDescriptorSddlForm('O:BAD:P(A;;FA;;;SY)(A;;0x1200a9;;;BU)')
+$mutable = [Security.AccessControl.DirectorySecurity]::new()
+$mutable.SetSecurityDescriptorSddlForm('O:BAD:P(A;;FA;;;SY)(A;;0x10000;;;BU)')
+$script:anchorRemovable = $false
+function Get-Acl { param($LiteralPath)
+    if ($LiteralPath -eq $public) { return $script:descriptor }
+    if ($LiteralPath -like "$public\*" -and $script:anchorRemovable) { return $mutable }
+    return $baseline
+}
+$script:descriptor.SetSecurityDescriptorSddlForm('O:BAD:P(A;;FA;;;SY)(A;;0x116;;;BU)')
+Assert-TrustedAncestry $public $public
+try { Assert-TrustedAncestry $public; exit 10 } catch { if ($_.Exception.Message -notmatch 'ancestor replacement') { throw } }
+$script:anchorRemovable = $true
+try { Assert-TrustedAncestry $public $public; exit 11 } catch { if ($_.Exception.Message -notmatch 'ancestor replacement') { throw } }
+$script:anchorRemovable = $false
+foreach ($mask in '0x156','0x10116','0x40116','0x80116') {
+    $script:descriptor.SetSecurityDescriptorSddlForm("O:BAD:P(A;;FA;;;SY)(A;;$mask;;;BU)")
+    try { Assert-TrustedAncestry $public $public; exit 12 } catch { if ($_.Exception.Message -notmatch 'ancestor replacement') { throw } }
+}
+try { Inspect-DataParent $public; exit 13 } catch { if ($_.Exception.Message -notmatch 'parent mutable') { throw } }
 exit 0
 """
         shell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
