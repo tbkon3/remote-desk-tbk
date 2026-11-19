@@ -145,10 +145,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! gh release view v2.4.0 >/dev/null 2>&1; then
+          tag=v2.4.0
+          package=RemoteDesk-2.4.0.zip
+          info="$RUNNER_TEMP/rd-release.json"
+          check_tag() {
+            local refs peeled direct
+            refs=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}") || return 1
+            if [[ -z "$refs" ]]; then [[ "$1" == optional ]]; return; fi
+            peeled=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<<"$refs")
+            direct=$(awk -v ref="refs/tags/$tag" '$2 == ref {print $1}' <<<"$refs")
+            [[ "${peeled:-$direct}" == "$GITHUB_SHA" ]]
+          }
+          check_tag optional
+          if ! gh release view "$tag" --json tagName,isDraft,isPrerelease,targetCommitish,assets > "$info"; then
             jq -r .notes dist/latest.json > "$RUNNER_TEMP/rd-release-notes"
-            gh release create v2.4.0 --target "$GITHUB_SHA" --title 'RemoteDesk 2.4.0' --notes-file "$RUNNER_TEMP/rd-release-notes" dist/RemoteDesk-2.4.0.zip dist/RemoteDesk-2.4.0.zip.sha256 dist/latest.json
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --title 'RemoteDesk 2.4.0' --notes-file "$RUNNER_TEMP/rd-release-notes" "dist/$package" "dist/$package.sha256" dist/latest.json
+            gh release view "$tag" --json tagName,isDraft,isPrerelease,targetCommitish,assets > "$info"
           fi
+          jq -e --arg tag "$tag" --arg sha "$GITHUB_SHA" --arg file "$package" '
+            .tagName == $tag and (.isPrerelease | not) and
+            (if .isDraft then .targetCommitish == $sha else true end) and
+            ([.assets[].name] | sort) == ([$file, ($file + ".sha256"), "latest.json"] | sort)
+          ' "$info" >/dev/null
+          if jq -e '.isDraft | not' "$info" >/dev/null; then check_tag required; fi
+          downloads=$(mktemp -d "$RUNNER_TEMP/rd-release-assets.XXXXXX")
+          gh release download "$tag" --dir "$downloads"
+          for file in "$package" "$package.sha256" latest.json; do cmp "$downloads/$file" "dist/$file"; done
+          if jq -e .isDraft "$info" >/dev/null; then
+            check_tag optional
+            gh release edit "$tag" --draft=false --latest
+          fi
+          check_tag required
       - name: Download the public stable feed and compare its ZIP with the verified package
         shell: bash
         run: |

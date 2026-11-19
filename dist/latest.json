@@ -1,10 +1,12 @@
 {
- "version": "2.3.2",
- "file": "RemoteDesk-2.3.2.zip",
- "url": "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.3.2.zip",
- "sha256": "76e054528ff95a3d7f323fb72963b9645108c919a79c63c90b0d9d67b3f3e1b5",
- "size": 53306324,
- "date": "2026-11-18",
- "notes": "- Corretto: \"Esci\" dall'icona nella barra non chiudeva RemoteDesk. Ora l'icona sparisce subito, le sessioni vengono\n  chiuse in modo ordinato e il programma termina in pochi istanti (al massimo 10 secondi in ogni caso).\n- Con il servizio installato la voce si chiama \"Chiudi icona (il servizio resta attivo)\", per chiarezza.",
- "sig": "tIsVQo7yJIDRbPKF7O9k2wn2I+5WzIiBSlZXOlpgdXm7fP4t4a4h133dxwZLnJr/pLKGw5Tt7JdUsz17JYX9AQ=="
+  "version": "2.4.0",
+  "file": "RemoteDesk-2.4.0.zip",
+  "url": "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/RemoteDesk-2.4.0.zip",
+  "size": 53535321,
+  "sha256": "3e58471929b5e4144c47be617689c2cd5498b6008115e00f6bfb9d8fb803f976",
+  "issued": 1795059711,
+  "expires": 1797651711,
+  "date": "2026-11-19",
+  "notes": "Aggiornare entrambi i PC per usare il protocollo 2. Dopo il primo passaggio dalla 2.3.2 riaprire la console dall'icona di RemoteDesk, autenticarsi e avviare una nuova sessione.",
+  "sig": "xgcf6DY7UdaYO34f1pSuL9EpDhvQWLHBOgiO5epQVQNmML7uJEGU12hOvTgQzRkjFBBakDlQLCzYaR8/rehSAw=="
 }
