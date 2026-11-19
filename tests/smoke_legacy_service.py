@@ -59,14 +59,31 @@ def verify_legacy(archive, manifest):
     require(archive.stat().st_size == LEGACY_SIZE and digest(archive) == LEGACY_HASH, "Archivio 2.3.2 diverso")
 
 
-def hashes(root, *, checkout=False):
-    return {p.relative_to(root).as_posix(): digest(p) for p in root.rglob("*")
-            if p.is_file() and (not checkout or "__pycache__" not in p.parts and p.suffix.lower() != ".pyc")}
+def hashes(root):
+    return {p.relative_to(root).as_posix(): digest(p) for p in root.rglob("*") if p.is_file()}
+
+
+def tracked_app_hashes():
+    # Su Windows il working tree può usare CRLF. La sorgente attestata è il blob Git del commit.
+    env = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
+    listing = run(["git", "-C", REPO, "ls-tree", "-rz", "HEAD", "--", "app"], env=env).stdout
+    result = {}
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        header, name = entry.split(b"\t", 1)
+        mode, kind, oid = header.split()
+        require(kind == b"blob" and mode in (b"100644", b"100755") and name.startswith(b"app/"),
+                "Tipo di file applicativo inatteso nel commit")
+        raw = run(["git", "-C", REPO, "cat-file", "blob", oid.decode("ascii")], env=env).stdout
+        result[name[4:].decode("utf8")] = hashlib.sha256(raw).hexdigest()
+    require(result, "Checkout Git privo dell'applicazione")
+    return result
 
 
 def validate_candidate(old, new):
     require(hashes(old / "runtime") == hashes(new / "runtime"), "Runtime candidato diverso dalla base firmata")
-    require(hashes(REPO / "app", checkout=True) == hashes(new / "app"), "App candidata diversa dal checkout verificato")
+    require(tracked_app_hashes() == hashes(new / "app"), "App candidata diversa dai blob Git del commit")
     module = ast.parse((new / "app" / "rd" / "common.py").read_text("utf8"))
     versions = [n.value.value for n in module.body if isinstance(n, ast.Assign)
                 and isinstance(n.targets[0], ast.Name) and n.targets[0].id == "VERSION"]

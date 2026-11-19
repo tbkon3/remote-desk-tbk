@@ -1,10 +1,10 @@
 name: RemoteDesk Windows 2.4.0
 on:
   pull_request:
-    paths: ['app/**', 'build/**', 'tests/**', '.github/workflows/windows-package.yml', 'dist/latest.json']
+    paths: ['app/**', 'build/**', 'tests/**', '.github/workflows/windows-package.yml', 'dist/latest.json', 'dist/RemoteDesk-2.4.0.zip*']
   push:
     branches: [main]
-    paths: ['app/**', 'build/**', 'tests/**', '.github/workflows/windows-package.yml', 'dist/latest.json']
+    paths: ['app/**', 'build/**', 'tests/**', '.github/workflows/windows-package.yml', 'dist/latest.json', 'dist/RemoteDesk-2.4.0.zip*']
   workflow_dispatch:
 
 permissions:
@@ -27,13 +27,23 @@ jobs:
       - run: python -m pip install cryptography==46.0.3
       - id: mode
         shell: pwsh
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           $v = (Get-Content -Raw dist/latest.json | ConvertFrom-Json).version
           switch ($v) {
             '2.3.2' { 'mode=build' >> $env:GITHUB_OUTPUT }
-            '2.4.0' { 'mode=verify' >> $env:GITHUB_OUTPUT }
+            '2.4.0' {
+              $mode = 'verify'
+              if ($env:BEFORE -match '^[a-f0-9]{40}$') {
+                git diff --quiet "$env:BEFORE" HEAD -- dist/latest.json dist/RemoteDesk-2.4.0.zip dist/RemoteDesk-2.4.0.zip.sha256
+                if ($LASTEXITCODE -eq 0) { $mode = 'complete' } elseif ($LASTEXITCODE -ne 1) { exit $LASTEXITCODE }
+              }
+              "mode=$mode" >> $env:GITHUB_OUTPUT
+            }
             default { 'mode=complete' >> $env:GITHUB_OUTPUT }
           }
+          exit 0
       - name: Build from the authenticated Windows runtime
         if: steps.mode.outputs.mode == 'build'
         shell: pwsh
@@ -48,6 +58,15 @@ jobs:
         run: |
           $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-package/RemoteDesk-2.4.0.zip" } else { 'dist/RemoteDesk-2.4.0.zip' }
           python tests/smoke_release_bundle.py $zip
+      - name: Migrate the historical Windows scheduled task on the temporary runner
+        if: steps.mode.outputs.mode != 'complete'
+        shell: pwsh
+        run: |
+          $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-package/RemoteDesk-2.4.0.zip" } else { 'dist/RemoteDesk-2.4.0.zip' }
+          $oldManifest = "$env:RUNNER_TEMP/legacy-2.3.2.json"
+          git show 70b260c46250fdbd38cf0eaf12ceb9cacc38f897:dist/latest.json | Set-Content -Encoding utf8 $oldManifest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/smoke_legacy_service.py --legacy-zip dist/RemoteDesk-2.3.2.zip --legacy-manifest $oldManifest --candidate-zip $zip
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: steps.mode.outputs.mode == 'build' && github.event_name != 'pull_request'
         with:
