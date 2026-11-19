@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -156,6 +157,23 @@ def owner_headers(local_access, port, data, method, path):
     return headers
 
 
+def launcher_diagnostic(root, args, env):
+    # pythonw cannot report errors from startup before logging is ready. Re-run the
+    # same standalone entry point after its job is empty, using the bundled runtime.
+    try:
+        result = subprocess.run([root / "runtime/python.exe", root / "app/remotedesk.py", *args],
+                                cwd=root, env=env, timeout=10, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return "The same entry point remained running during the diagnostic interval"
+    for line in reversed(result.stderr.splitlines()):
+        if re.match(r"^[\w.]+(?:Error|Exception): ", line):
+            # Report the exception only; exclude configuration dumps, URLs and credentials.
+            line = re.sub(r"(?:https?|file)://\S+|[a-zA-Z0-9_+/=-]{28,}", "[redacted]", line)
+            return line[:420]
+    return f"Bundled Python exited with status {result.returncode}"
+
+
 def probe(root, data, port, version):
     # This branch is invoked by the Python executable INSIDE the candidate ZIP.
     root = root.resolve(strict=True)  # hosted runners can supply an 8.3 alias for %TEMP%
@@ -195,6 +213,9 @@ def probe(root, data, port, version):
 
 def smoke(archive, version=VERSION):
     require(sys.platform == "win32", "Run this test on Windows")
+    if version == "2.4.1":
+        require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+                "Run the portable profile smoke on a disposable hosted Windows runner")
     # Validate every archive member via checkout code before importing or running anything in the ZIP.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
     from rd.release_package import MAX_PACKAGE, extract_package
@@ -224,16 +245,20 @@ def smoke(archive, version=VERSION):
                   "network": "", "networks": [], "known": {}, "signal": "", "stun": [], "turn_url": "", "accept_incoming": False}
         (data / "config.json").write_text(json.dumps(config), encoding="utf-8")
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHON", "RD_"))}
-        env.update(USERPROFILE=str(profile), LOCALAPPDATA=str(profile), APPDATA=str(profile), HOME=str(profile),
-                   LOGNAME="smoke", USER="smoke", USERNAME="smoke", LNAME="smoke", HTTP_PROXY="http://127.0.0.1:1",
-                   HTTPS_PROXY="http://127.0.0.1:1", ALL_PROXY="http://127.0.0.1:1", NO_PROXY="127.0.0.1,localhost")
+        if version == VERSION:
+            env.update(USERPROFILE=str(profile), LOCALAPPDATA=str(profile), APPDATA=str(profile), HOME=str(profile),
+                       LOGNAME="smoke", USER="smoke", USERNAME="smoke", LNAME="smoke")
+        env.update(HTTP_PROXY="http://127.0.0.1:1", HTTPS_PROXY="http://127.0.0.1:1",
+                   ALL_PROXY="http://127.0.0.1:1", NO_PROXY="127.0.0.1,localhost")
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-        with private_launcher(root / "RemoteDesk.exe", ["--agent-only", "--data", str(data), "--port", str(port)], env) as active:
+        args = ["--agent-only", "--data", str(data), "--port", str(port)]
+        with private_launcher(root / "RemoteDesk.exe", args, env) as active:
             end = time.monotonic() + 30
             while not (data / "local.token").is_file():
-                require(active(), "Launcher exited without starting the fixture")
+                if not active():
+                    raise RuntimeError("Launcher exited without starting the fixture: " + launcher_diagnostic(root, args, env))
                 require(time.monotonic() < end, "Agent did not bind its loopback port within 30 seconds")
                 time.sleep(0.1)
             subprocess.run([root / "runtime/python.exe", "-I", "-B", Path(__file__).resolve(), "--probe",
