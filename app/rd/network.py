@@ -13,9 +13,9 @@ import time
 
 from aiohttp import ClientSession, ClientTimeout
 
-from . import auth
+from . import auth, session_policy
 from .relays import DEFAULT_SIGNAL, make_relay, parse_signal
-from .common import VERSION, NetKey, current_user, os_label
+from .common import VERSION, WIN, NetKey, current_user, os_label
 
 log = logging.getLogger("rd.net")
 PRESENCE_EVERY = 1800     # annuncio di sicurezza ogni 30 minuti; per il resto si annuncia solo quando serve
@@ -37,7 +37,7 @@ class Network:
         self.entry = entry                 # {nid, name, key, registry}
         self.nid = entry["nid"]
         self.name = entry["name"]
-        self.reg = auth.Registry(entry.get("registry"))
+        self.reg = auth.Registry.from_cache(entry.get("registry"))
         self.key = None
         self.task = None
         self.state = "ferma"
@@ -49,8 +49,8 @@ class Network:
         self.db_asked = {}         # versione -> quando l'ho chiesta
         self.db_waiters = []       # Future in attesa di un registro (ingresso in rete)
         self.audit_waiters = {}    # rid -> lista risposte registro accessi
-        self.audit_seen = {}
-        self.conflict = False
+        self.audit_task = None
+        self.conflict = entry.get("conflict") is True
         self.last_presence = 0    # ultimo annuncio inviato
         self.last_hello = 0       # ultima richiesta di ripresentarsi
         self.limited = False      # il server ha rifiutato per troppi messaggi
@@ -62,12 +62,17 @@ class Network:
     def restart(self):
         self.stop()
         self.key = NetKey(self.entry["name"], self.entry["key"])
-        self.relays = [make_relay(u, self.key.topic) for u in (parse_signal(self.cfg["signal"]) or
-                                                               parse_signal(DEFAULT_SIGNAL))]
+        self.relays = [make_relay(u, self.key.topic) for u in parse_signal(self.cfg["signal"] or DEFAULT_SIGNAL)]
+        if not self.relays:
+            self.state = "configurazione relay non valida"
+            return
         self.announced = False
         self.task = asyncio.ensure_future(self._main())
 
     def stop(self):
+        for future, *_ in self.pending.values():
+            if not future.done():
+                future.set_exception(RuntimeError("Connessione di segnalazione terminata"))
         if self.task:
             self.task.cancel()
             self.task = None
@@ -76,6 +81,20 @@ class Network:
 
     # ------------------------------------------------------------------ registro firmato
     def on_registry(self, doc):
+        if self.reg.doc and doc.get("v") == self.reg.version:
+            if auth.doc_hash(doc) != auth.doc_hash(self.reg.doc):
+                prev = next((d for d in reversed(self.entry.get("history", [])) if isinstance(d, dict)
+                             and d.get("v") == self.reg.version - 1 and auth.doc_hash(d) == self.reg.doc["prev"]), None)
+                authenticated = (auth.Registry(prev).check_new(doc) if prev else
+                                 self.reg.version == 1 and auth.Registry().check_new(
+                                     doc, pinned_admin_pub=(self.reg.user(self.reg.doc["signer"]) or {}).get("pub")))
+                if authenticated and not self.conflict:
+                    self.conflict = True
+                    self.entry["conflict"] = True
+                    self.agent.registry_changed(self)
+                    self.agent.save_networks()
+                    self.agent.log_event(f"Rete {self.name}: ricevute due versioni firmate incompatibili del registro")
+            return False
         if not self.reg.check_new(doc):
             return False
         self.apply_registry(doc)
@@ -86,9 +105,9 @@ class Network:
         self.entry["registry"] = doc
         hist = [d for d in (self.entry.get("history") or []) if d.get("v", 0) < doc["v"]] + [doc]
         self.entry["history"] = hist[-100:]     # catena recente, per chi deve recuperare versioni
+        self.agent.registry_changed(self)
         self.agent.save_networks()
         log.info("[%s] registro aggiornato alla versione %s (firmato da %s)", self.name, doc["v"], doc.get("signer"))
-        self.agent.registry_changed(self)
 
     async def publish_registry(self):
         try:
@@ -101,6 +120,8 @@ class Network:
             None, auth.derive_user_key, self.name, user, password)
 
     async def admin_update(self, lg, mutate):
+        if self.conflict:
+            raise RuntimeError("Riconciliare il conflitto nel registro prima di modificarlo")
         if not lg or not self.reg.is_admin(lg["user"]):
             raise RuntimeError("Serve un amministratore di questa rete")
         doc = self.reg.signed_update(lg["user"], lg["priv"], mutate)
@@ -166,9 +187,7 @@ class Network:
             return
         self.recent[h] = now
         if len(self.recent) > 3000:
-            for k, t0 in list(self.recent.items()):
-                if now - t0 > 900:
-                    self.recent.pop(k, None)
+            self.recent.pop(next(iter(self.recent)))
         ev = {"message": body, "time": server_time if isinstance(server_time, int) else int(self.server_now())}
         try:
             await self._on_event(ev)
@@ -197,22 +216,39 @@ class Network:
                 await self.refresh(force=True)
             was_active = active
 
-    async def _run_update(self, user):
+    def _verified_update(self, m):
+        body = {k: m.get(k) for k in ("frm", "to", "user", "ats", "cmd", "rid", "net", "protocol")}
+        if (self.conflict or not self.cfg.get("auto_update") or self.cfg.get("on_air")
+                or body["cmd"] != "update" or body["net"] != self.nid or body["protocol"] != auth.SESSION_PROTOCOL
+                or body["to"] != self.cfg["id"] or type(body["ats"]) is not int or abs(time.time() - body["ats"]) > 120
+                or not isinstance(body["rid"], str) or not re.fullmatch(r"[0-9a-f]{24}", body["rid"])
+                or not isinstance(body["user"], str) or not self.reg.is_admin(body["user"])):
+            return False
+        machine = self.reg.machines().get(body["frm"])
+        return bool(machine and (self.reg.machines().get(self.cfg["id"]) or {}).get("pub") == self.agent.mpub
+                    and auth.verify(machine["pub"], body, m.get("msig", ""))
+                    and auth.verify(self.reg.user(body["user"])["pub"], body, m.get("sig", "")))
+
+    async def _run_update(self, m):
+        if not self._verified_update(m):
+            return
+        user = m["user"]
         try:
-            await self.agent.updater.install(f"{user} (rete {self.name})")
+            await self.agent.updater.install(f"{user} (rete {self.name})", automatic=True)
         except Exception as e:
             log.warning("aggiornamento richiesto da %s non eseguito: %s", user, e)
             self.agent.log_event(f"Aggiornamento richiesto da {user} non eseguito: {e}")
 
     async def send_update(self, to, lg):
         """Chiede alla macchina 'to' di aggiornarsi (comando firmato dall'amministratore)."""
-        if not self.reg.is_admin(lg["user"]):
+        if self.conflict or not self.reg.is_admin(lg["user"]):
             raise RuntimeError("Serve un amministratore di questa rete")
-        if to not in self.reg.machines():
-            raise RuntimeError("Macchina non registrata")
-        body = {"frm": self.cfg["id"], "to": to, "user": lg["user"], "ats": int(self.server_now()), "cmd": "update",
-                "rid": secrets.token_hex(12)}
-        await self.publish({"type": "updcmd", **body, "sig": auth.sign(lg["priv"], body)})
+        if to not in self.reg.machines() or self.machines.get(to, {}).get("session_protocol") != auth.SESSION_PROTOCOL:
+            raise RuntimeError("Serve un dispositivo registrato con protocollo di sessione 2")
+        body = {"frm": self.cfg["id"], "to": to, "user": lg["user"], "ats": int(time.time()), "cmd": "update",
+                "rid": secrets.token_hex(12), "net": self.nid, "protocol": auth.SESSION_PROTOCOL}
+        await self.publish({"type": "updcmd", **body, "sig": auth.sign(lg["priv"], body),
+                            "msig": auth.sign(self.agent.mkey, body)})
 
     async def refresh(self, force=False):
         """Chiede a tutte le macchine della rete di ripresentarsi (al massimo ogni 15 secondi)."""
@@ -239,6 +275,7 @@ class Network:
         a = self.agent
         return {"type": "presence", "name": self.cfg["name"], "os": os_label(),
                 "user": a.logged_user() or current_user(), "ver": VERSION, "service": a.service_mode,
+                "session_protocol": auth.SESSION_PROTOCOL, "inventory": WIN and bool(self.cfg.get("allow_inventory")),
                 "sessions": len(a.sessions), "accept": bool(self.cfg["accept_incoming"]),
                 "dbv": self.reg.version, "dbh": (auth.doc_hash(self.reg.doc) or "")[:16], "mpub": a.mpub}
 
@@ -251,6 +288,7 @@ class Network:
             raise RuntimeError("rete non connessa")
         obj = dict(obj, frm=self.cfg["id"], ts=int(time.time()))
         if obj.get("type") in ("presence", "bye"):
+            obj["net"] = self.nid
             obj["msig"] = auth.sign(self.agent.mkey, obj)
         blob = self.key.seal(obj)
 
@@ -282,7 +320,10 @@ class Network:
         log.debug("ricevuto %s da %s (eta' %.0fs)", t, frm, age)
         if t in ("presence", "bye"):
             mach = self.reg.machines().get(frm)   # presenza valida solo se firmata da una macchina registrata
-            if not mach or not auth.verify(mach["pub"], {k: v for k, v in m.items() if k != "msig"}, m.get("msig", "")):
+            if (not mach or ("net" in m and m["net"] != self.nid) or type(m.get("ts")) is not int
+                    or abs(time.time() - m["ts"]) > OFFLINE_AFTER or abs(age) > OFFLINE_AFTER
+                    or m["ts"] < self.machines.get(frm, {}).get("signed_at", 0)
+                    or not auth.verify(mach["pub"], {k: v for k, v in m.items() if k != "msig"}, m.get("msig", ""))):
                 return
         if t == "presence":
             if age > OFFLINE_AFTER:
@@ -297,23 +338,28 @@ class Network:
             dbv_raw = m.get("dbv")
             info = {"name": txt(m.get("name")), "os": txt(m.get("os")), "user": txt(m.get("user")),
                     "ver": txt(m.get("ver"), 20), "service": bool(m.get("service")), "sessions": sessions,
+                    "signed_at": m["ts"], "pub": mach["pub"],
+                    "session_protocol": m.get("session_protocol") if m.get("net") == self.nid and type(m.get("session_protocol")) is int else 0,
+                    "inventory": m.get("net") == self.nid and m.get("inventory") is True,
                     "accept": bool(m.get("accept", True)), "dbv": dbv_raw if isinstance(dbv_raw, int) else 0}
             info["id"] = frm
             info["last_seen"] = time.time() - max(age, 0)
             self.machines[frm] = info
             dbv = info["dbv"]
             my_h = (auth.doc_hash(self.reg.doc) or "")[:16]
-            if dbv == self.reg.version and m.get("dbh") and m.get("dbh") != my_h and not self.conflict:
-                # stessa versione ma contenuto diverso: qualcuno ha biforcato il registro
-                self.conflict = True
-                log.error("[%s] CONFLITTO nel registro con la macchina %s (versione %s)", self.name, frm, dbv)
-                self.agent.log_event(f"ATTENZIONE: registro della rete {self.name} in conflitto con un altro PC")
+            if (m.get("net") == self.nid and dbv == self.reg.version and m.get("dbh") and m.get("dbh") != my_h
+                    and not self.conflict and time.time() - self.db_asked.get(dbv, 0) > 30):
+                # A device can advertise a different hash. Require an actual admin-signed fork.
+                self.db_asked[dbv] = time.time()
+                asyncio.create_task(self._safe_publish({"type": "dbreq", "to": frm, "have": max(0, dbv - 1)}))
             if dbv > self.reg.version and self.reg.version and \
                     time.time() - self.db_asked.get(dbv, 0) > 30:
                 self.db_asked[dbv] = time.time()
                 asyncio.ensure_future(self._safe_publish({"type": "dbreq", "to": frm, "have": self.reg.version}))
         elif t == "db":
             docs = m.get("docs") if isinstance(m.get("docs"), list) else [m.get("doc")]
+            if len(docs) > 2048:
+                return
             docs = [d for d in docs if isinstance(d, dict) and isinstance(d.get("v"), int)]
             for fut in list(self.db_waiters):
                 fut.set_result(docs)
@@ -335,17 +381,25 @@ class Network:
                 if chunk:
                     asyncio.ensure_future(self._safe_publish({"type": "db", "docs": list(reversed(chunk))}, delay=delay))
         elif t == "auditreq":
-            rid = m.get("rid")
-            if rid in self.audit_seen or self.reg.version == 0:
-                return
-            self.audit_seen[rid] = time.time()
-            rep = self.agent.audit_answer(self, m, ev.get("time", self.server_now()))
-            if rep:
-                asyncio.ensure_future(self._safe_publish(rep, delay=random.uniform(0, 2)))
+            if (abs(age) <= 45 and (not self.audit_task or self.audit_task.done())
+                    and self.agent.verified_audit_request(self, m) and self.remember_once(m["rid"])):
+                self.audit_task = asyncio.create_task(self.agent.audit_answer(self, m))
         elif t == "auditrep":
-            box = self.audit_waiters.get(m.get("rid"))
-            if box is not None and m.get("to") == self.cfg["id"]:
-                box.append((frm, m))
+            rid, box = m.get("rid"), m.get("box")
+            waiter = self.audit_waiters.get(rid) if isinstance(rid, str) else None
+            machine = self.reg.machines().get(frm)
+            if (waiter is None or self.conflict or abs(age) > 45 or not machine or frm in waiter["responses"]
+                    or len(waiter["responses"]) >= 256 or m.get("net") != self.nid
+                    or m.get("protocol") != auth.SESSION_PROTOCOL or m.get("to") != self.cfg["id"]
+                    or not isinstance(box, dict) or set(box) != {"epk", "n", "c"}
+                    or not all(isinstance(v, str) for v in box.values())
+                    or len(box["epk"]) != 44 or len(box["n"]) != 16 or len(box["c"]) > 512 * 1024
+                    or len(box["c"]) + waiter["size"] > 8 * 1024 * 1024):
+                return
+            body = auth.audit_reply_body(self.nid, frm, self.cfg["id"], rid, box)
+            if auth.verify(machine["pub"], body, m.get("msig", "")):
+                waiter["responses"][frm] = (machine["pub"], box)
+                waiter["size"] += len(box["c"])
         elif t == "hello":
             if age < 60 and time.time() - self.last_presence > 10:   # niente risposte doppie a richieste simultanee
                 asyncio.get_running_loop().call_later(random.uniform(0.2, 2.5),
@@ -353,42 +407,45 @@ class Network:
         elif t == "bye":
             if frm in self.machines:
                 self.machines[frm]["last_seen"] = 0
+                self.machines[frm]["signed_at"] = m["ts"]
         elif m.get("to") != self.cfg["id"]:
             return
         elif t == "updcmd":
             # comando di aggiornamento: solo da un amministratore di questa rete, firmato e recente
-            body = {k: m.get(k) for k in ("frm", "to", "user", "ats", "cmd", "rid")}
-            u = self.reg.user(m.get("user") or "")
-            seen = self.agent.seen_sids
-            if (body["cmd"] != "update" or not self.reg.is_admin(m.get("user") or "") or not isinstance(body["ats"], int)
-                    or abs(ev.get("time", 0) - body["ats"]) > 120 or body["rid"] in seen
-                    or not auth.verify(u["pub"], body, m.get("sig", ""))):
-                return
-            seen[body["rid"]] = time.time()
-            asyncio.ensure_future(self._run_update(body["user"]))
+            if abs(age) <= 45 and self._verified_update(m) and self.remember_once(m["rid"]):
+                asyncio.create_task(self._run_update(m))
         elif t == "offer":
             sid = m.get("sid")
-            # anti-replay: firma recente, rispetto all'orario del server, e sid mai visto
-            seen = self.agent.seen_sids   # anti-replay comune a tutte le reti
-            if not isinstance(sid, str) or not isinstance(m.get("uts"), int) or not isinstance(m.get("sdp"), str):
+            if (m.get("protocol") != auth.SESSION_PROTOCOL or not isinstance(sid, str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", sid) or type(m.get("uts")) is not int
+                    or not isinstance(m.get("sdp"), str) or len(m["sdp"]) > 256 * 1024):
                 return
-            if age > 45 or abs(ev.get("time", 0) - m["uts"]) > 120 or sid in seen:
+            if abs(self.server_now() - m["uts"]) > 120 or abs(time.time() - m["uts"]) > 120 or abs(age) > 45:
                 return
-            seen[sid] = time.time()
-            for k, t0 in list(seen.items()):
-                if time.time() - t0 > 600:
-                    seen.pop(k, None)
-            asyncio.ensure_future(self._answer_offer(m))
+            # Only signed requests are answered or consume a replay entry.
+            if self.agent.verified_offer(self, m) and self.remember_once(sid):
+                asyncio.ensure_future(self._answer_offer(m))
         elif t == "answer":
             p = self.pending.get(m.get("sid"))
-            if not p or p[0].done() or frm != p[1]:
+            if (not p or p[0].done() or frm != p[1] or m.get("protocol") != auth.SESSION_PROTOCOL
+                    or m.get("mode") != p[2] or ("sdp" in m) == ("error" in m)):
                 return
             mach = self.reg.machines().get(frm)
-            body = {"frm": frm, "to": self.cfg["id"], "sid": m.get("sid")}
-            body.update({"h": auth.sdp_hash(m["sdp"])} if isinstance(m.get("sdp"), str) else {"err": str(m.get("error"))})
-            if mach and auth.verify(mach["pub"], body, m.get("msig", "")):   # risposte non firmate: ignorate
+            if not isinstance(m.get("sdp", m.get("error")), str):
+                return
+            if mach and mach.get("pub") == p[3] and auth.verify(p[3], auth.answer_body(self.nid, m), m.get("msig", "")):
                 self.alive(frm)
                 p[0].set_result(m)
+
+    def remember_once(self, request_id):
+        seen = self.agent.seen_sids
+        now = time.time()
+        for key in [key for key, stamp in seen.items() if now - stamp > 600]:
+            del seen[key]
+        if request_id in seen or len(seen) >= 4096:
+            return False
+        seen[request_id] = now
+        return True
 
     async def _safe_publish(self, obj, delay=0):
         try:
@@ -405,16 +462,14 @@ class Network:
             pass
 
     async def _answer_offer(self, m):
+        reply = {"type": "answer", "frm": self.cfg["id"], "to": m["frm"], "sid": m["sid"],
+                 "protocol": auth.SESSION_PROTOCOL, "mode": m["mode"]}
         try:
-            sdp = await self.agent.accept_offer(self, m)
-            reply = {"type": "answer", "to": m["frm"], "sid": m.get("sid"), "sdp": sdp,
-                     "msig": auth.sign(self.agent.mkey, {"frm": self.cfg["id"], "to": m["frm"], "sid": m.get("sid"),
-                                                          "h": auth.sdp_hash(sdp)})}
+            reply["sdp"] = await self.agent.accept_offer(self, m)
         except Exception as e:
             log.info("connessione rifiutata: %s", e)
-            reply = {"type": "answer", "to": m["frm"], "sid": m.get("sid"), "error": str(e),
-                     "msig": auth.sign(self.agent.mkey, {"frm": self.cfg["id"], "to": m["frm"], "sid": m.get("sid"),
-                                                          "err": str(e)})}
+            reply["error"] = str(e)[:500]
+        reply["msig"] = auth.sign(self.agent.mkey, auth.answer_body(self.nid, reply))
         await self.publish(reply)
 
     # ------------------------------------------------------------------ lato console
@@ -423,26 +478,47 @@ class Network:
             raise RuntimeError("Rete non configurata")
         reg = self.reg
         mach = reg.machines().get(to)
-        if not mach:
+        if self.conflict or not mach:
             raise RuntimeError("Macchina non registrata nella rete")
+        peer = self.machines.get(to, {})
+        if (peer.get("session_protocol") != auth.SESSION_PROTOCOL or peer.get("pub") != mach.get("pub")
+                or time.time() - peer.get("last_seen", 0) > OFFLINE_AFTER):
+            raise RuntimeError("Aggiorna entrambi i PC e ricarica l'elenco: serve il protocollo di sessione 2")
+        if auth.MODE_RIGHTS.get(mode) not in reg.rights(user, to):
+            raise RuntimeError("Permesso di sessione mancante")
+        session_policy.validate_sdp(sdp, mode)
         sid = secrets.token_hex(16)
         fut = asyncio.get_running_loop().create_future()
-        self.pending[sid] = (fut, to)
-        ts = int(self.server_now())
-        signed = {"frm": self.cfg["id"], "to": to, "sid": sid, "mode": mode, "user": user, "ts": ts,
-                  "h": auth.sdp_hash(sdp)}
+        target_pub = mach["pub"]
+        self.pending[sid] = (fut, to, mode, target_pub, user, auth.pub_of(priv))
+        offer = {"type": "offer", "frm": self.cfg["id"], "to": to, "sid": sid, "user": user,
+                 "protocol": auth.SESSION_PROTOCOL, "mode": mode, "sdp": sdp, "uts": int(time.time())}
+        signed = auth.offer_body(self.nid, offer)
+        offer.update(usig=auth.sign(priv, signed), msig=auth.sign(self.agent.mkey, signed))
         try:
-            await self.publish({"type": "offer", "to": to, "sid": sid, "sdp": sdp, "mode": mode,
-                                "name": self.cfg["name"], "user": user, "uts": ts,
-                                "usig": auth.sign(priv, signed)})
+            await self.publish(offer)
             m = await asyncio.wait_for(fut, 45)
         except asyncio.TimeoutError:
             raise RuntimeError("Nessuna risposta: la macchina e' offline o non raggiungibile")
         finally:
             self.pending.pop(sid, None)
-        if m.get("error"):
+        if "error" in m:
             raise RuntimeError(m["error"])
-        return m["sdp"]   # gia' verificata (firma della macchina) prima di risolvere l'attesa
+        if (self.conflict or auth.MODE_RIGHTS.get(mode) not in reg.rights(user, to)
+                or (reg.user(user) or {}).get("pub") != auth.pub_of(priv)
+                or (reg.machines().get(to) or {}).get("pub") != target_pub
+                or (reg.machines().get(self.cfg["id"]) or {}).get("pub") != self.agent.mpub):
+            raise RuntimeError("Autorizzazione revocata durante la connessione")
+        session_policy.validate_sdp(m["sdp"], mode)
+        return m["sdp"], sid
+
+    def lease_proof(self, sid, target, mode, user, priv):
+        if (self.conflict or (self.reg.machines().get(self.cfg["id"]) or {}).get("pub") != self.agent.mpub
+                or not self.reg.machines().get(target) or auth.MODE_RIGHTS.get(mode) not in self.reg.rights(user, target)
+                or (self.reg.user(user) or {}).get("pub") != auth.pub_of(priv)):
+            raise RuntimeError("Autorizzazione di sessione revocata")
+        body = auth.renewal_body(self.nid, self.cfg["id"], target, sid, mode, user, int(time.time()))
+        return dict(body, usig=auth.sign(priv, body), msig=auth.sign(self.agent.mkey, body))
 
     async def fetch_registry(self, timeout=25):
         """Chiede le catene di registro alle macchine della rete; ritorna tutti i documenti ricevuti."""
@@ -450,8 +526,18 @@ class Network:
         fut = asyncio.get_running_loop().create_future()
 
         class _W:
+            size = 0
+            overflow = False
+
             def set_result(self, docs):
-                got.extend(docs)
+                if self.overflow:
+                    return
+                self.size += sum(len(auth.canon(doc)) for doc in docs)
+                if self.size > 8 * 1024 * 1024 or len(got) + len(docs) > 2048:
+                    self.overflow = True
+                    got.clear()
+                else:
+                    got.extend(docs)
                 if not fut.done():
                     fut.set_result(True)
         w = _W()
@@ -466,6 +552,8 @@ class Network:
                 try:
                     await asyncio.wait_for(asyncio.shield(fut), 5)
                     await asyncio.sleep(2.5)  # aspetto altre risposte
+                    if w.overflow:
+                        raise RuntimeError("Risposta del registro oltre i limiti consentiti")
                     return got
                 except asyncio.TimeoutError:
                     continue

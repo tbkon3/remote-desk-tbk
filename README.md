@@ -1,5 +1,32 @@
 # RemoteDesk
 
+## Sorgenti in revisione · protocollo 2
+
+La console gestisce i PC Windows registrati nella stessa rete RemoteDesk. Questa revisione richiede il protocollo 2 su entrambi i PC per avviare una sessione. Lo ZIP 2.3.2 distribuito in precedenza usa il protocollo precedente.
+
+**Gestisci PC** apre un canale dati dedicato. Dalla rubrica seleziona una macchina Windows online con inventario abilitato. Il tecnico deve ricevere il diritto **Inventario** su quella macchina e ottenere la conferma locale. Può consultare condivisioni, unità, servizi e applicazioni installate visibili all'utente. La scheda Applicazioni rimanda a Microsoft Intune per l'assegnazione del software aziendale. L'operatore sceglie il tenant e i destinatari e controlla l'esito in Intune.
+
+I profili di connessione hanno canali distinti per visualizzazione, controllo, file e inventario. Al primo avvio di questa revisione il PC richiede nuovamente l'abilitazione locale di file e appunti. Gli appunti si trasferiscono con i pulsanti di invio e ricezione. La chat locale richiede la scelta di un tecnico quando ce ne sono più di uno. La modalità **In onda** limita alimentazione, blocco dell'input, desktop sicuro e aggiornamenti automatici.
+
+### Uso tra sedi o tramite Internet
+
+1. Configura almeno un relay di segnalazione comune e raggiungibile da entrambe le sedi. La configurazione iniziale usa servizi pubblici. Per un'installazione amministrata puoi inserire endpoint HTTPS, WSS o MQTTS aziendali. I servizi di segnalazione e STUN osservano gli indirizzi e gli orari delle connessioni.
+2. In **Impostazioni** configura STUN e un servizio TURN raggiungibile dai due PC. Per una rete che limita UDP, configura il server con certificato valido e prova un URL come `turns:turn.azienda.it:443?transport=tcp`. La porta 443 deve servire TURN/TLS. Disponibilità di rete, DNS, proxy, certificati e policy dei due firewall determinano il risultato.
+3. Usa credenziali TURN distinte per l'ambiente. Il segreto coturn opzionale produce credenziali temporanee di un'ora. Chi amministra un endpoint che contiene il segreto può emettere credenziali, quindi distribuiscilo soltanto su endpoint amministrati. Con credenziali statiche il browser autorizzato riceve la password TURN. La console HTTP resta su loopback. Mantieni la porta 47800 fuori dal port forwarding.
+4. Collauda due PC pilota su accessi Internet indipendenti, per esempio la sede e un hotspot. Prova prima l'inventario e poi la visualizzazione con consenso. Annota il percorso riportato dall'interfaccia. In una rete di collaudo che richiede un relay, verifica che compaia **Via TURN**. Ripeti con accesso negato, revoca durante la sessione, logout e interruzione della connessione. Una voce TURN nelle impostazioni indica configurazione. La coppia ICE selezionata durante la sessione identifica il percorso realmente utilizzato.
+
+Per gli stati di sicurezza e i prerequisiti di migrazione consulta [SECURITY.md](SECURITY.md).
+
+### Test dai sorgenti
+
+Da un ambiente di sviluppo con Python 3.12, le dipendenze di `requirements.txt` e Node, esegui `python -m unittest discover -s tests` e `node --test tests/*.cjs`. La suite usa identità effimere, file sintetici e inventario simulato. Comprende un test TCP su loopback e test Win32 che dipendono dai permessi del runner. Il collaudo WAN con TURN reale richiede due accessi di rete e credenziali di test.
+
+---
+
+## Manuale della distribuzione precedente (2.3.2)
+
+Le istruzioni seguenti descrivono il pacchetto 2.3.2, comprese le sue impostazioni e le prove eseguite prima di questa revisione.
+
 Assistenza e controllo remoto tra i **tuoi** PC Windows, **senza server propri** e senza limiti di tempo.
 Un'unica cartella portabile (`RemoteDesk.exe` + Python incluso): nessuna installazione obbligatoria.
 
@@ -11,8 +38,7 @@ Un'unica cartella portabile (`RemoteDesk.exe` + Python incluso): nessuna install
 
 > ### [⬇ Scarica RemoteDesk 2.3.2 per Windows (zip, 53 MB)](https://github.com/tbkon3/remote-desk-tbk/raw/main/dist/RemoteDesk-2.3.2.zip)
 > Il link scarica direttamente lo zip. Impronta SHA-256 in [dist/RemoteDesk-2.3.2.zip.sha256](dist/RemoteDesk-2.3.2.zip.sha256).
-> Se il browser blocca il download ("non viene scaricato comunemente" / "potrebbe essere dannoso"): apri i download
-> (Ctrl+J) e scegli **Mantieni** > **Mantieni comunque** (l'exe non e' firmato digitalmente).
+> Il binario 2.3.2 è privo di firma Authenticode.
 > Estrai lo zip (es. in `C:\RemoteDesk`); su ogni PC usa **lo zip originale**, non una cartella gia' usata.
 
 ---

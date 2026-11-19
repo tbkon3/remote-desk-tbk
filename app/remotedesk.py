@@ -31,20 +31,27 @@ import logging  # noqa: E402
 log = logging.getLogger("rd")
 
 
-def api(port, path, body=None, timeout=2):
+def api(port, path, body=None, timeout=2, data_dir=None):
+    from rd.local_access import native_headers
     try:
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data,
-                                     headers={"Content-Type": "application/json"},
-                                     method="POST" if data is not None else "GET")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())
-    except Exception:
+        method = "POST" if data is not None else "GET"
+        headers = native_headers(port, path, method, data_dir=data_dir)
+        headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, headers=headers, method=method)
+        class LocalOnly(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args):
+                return None
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), LocalOnly())
+        with opener.open(req, timeout=timeout) as response:
+            raw = response.read(262145)
+            return json.loads(raw) if len(raw) <= 262144 else None
+    except (OSError, ValueError):
         return None
 
 
-def agent_alive(port):
-    r = api(port, "/api/ping", timeout=1.5)
+def agent_alive(port, data_dir=None):
+    r = api(port, "/api/ping", timeout=1.5, data_dir=data_dir)
     return bool(r and r.get("app") == "remotedesk")
 
 
@@ -72,10 +79,13 @@ async def run_agent(data_dir, port, service_mode=False, parent=None, stop_flag=N
             await asyncio.sleep(1)
     else:
         log.error("porta %s non disponibile", port)
+        await runner.cleanup()
         return
     log.info("agente pronto: ID %s, http://127.0.0.1:%s/ (servizio=%s)", fmt_id(cfg["id"]), port, service_mode)
+    from rd.common import write_private
+    write_private(os.path.join(data_dir, "local.token"), agent.local_token)
     agent.start_networks()
-    tasks = [asyncio.ensure_future(agent.clip_watch()), asyncio.ensure_future(agent.housekeeping()),
+    tasks = [asyncio.ensure_future(agent.housekeeping()),
              asyncio.ensure_future(agent.cursor_watch()), asyncio.ensure_future(agent.updater.loop())]
     if parent:
         tasks.append(asyncio.ensure_future(agent.watch_parent(parent)))
@@ -139,7 +149,7 @@ class App:
             return
         if self.agent and self.agent.alive():
             return
-        if agent_alive(self.port):
+        if agent_alive(self.port, self.data_dir):
             return
         if self.service_installed():
             return  # ci pensa il servizio
@@ -149,13 +159,13 @@ class App:
     def open_console(self, *_):
         from rd.agent import open_console
         for _ in range(40):
-            if agent_alive(self.port):
+            if agent_alive(self.port, self.data_dir):
                 break
             time.sleep(0.25)
-        open_console(self.port)
+        open_console(self.port, data_dir=self.data_dir)
 
     def close_all(self, *_):
-        api(self.port, "/api/sessions/close", {})
+        api(self.port, "/api/sessions/close", {}, data_dir=self.data_dir)
 
     def exit(self, *_):
         """Voce "Esci": l'icona sparisce subito, l'agente ha pochi secondi per chiudersi in modo pulito,
@@ -192,7 +202,7 @@ class App:
                         self.icon.stop()
                     os._exit(0)
                 self.ensure_agent()
-                st = api(self.port, "/api/public")
+                st = api(self.port, "/api/public", data_dir=self.data_dir)
                 if st and self.icon:
                     cur = {s["sid"]: s for s in st["sessions"] if s["connected"]}
                     for sid in set(cur) - self.last_sessions:
@@ -210,19 +220,15 @@ class App:
         from rd.agent import open_chat_window
         last_open, last_notified = 0, 0
         while not self.quit.is_set():
-            st = api(self.port, "/api/chat", timeout=1.5)
+            st = api(self.port, "/api/chat", timeout=1.5, data_dir=self.data_dir)
             if st and st.get("unread") and not st.get("window"):
                 if time.time() - last_open > 20:
                     last_open = time.time()
-                    open_chat_window(self.port)
-                newest = max((m["id"] for m in st["messages"] if m["who"] == "tech"), default=0)
+                    open_chat_window(self.port, data_dir=self.data_dir)
+                newest = st.get("latest", 0)
                 if self.icon and newest > last_notified:
                     last_notified = newest
-                    try:
-                        m = [m for m in st["messages"] if m["id"] == newest][0]
-                        self.icon.notify(m["text"][:200], f"Messaggio da {m['name']}")
-                    except Exception:
-                        pass
+                    self.icon.notify("Hai un messaggio nella chat di assistenza", "RemoteDesk")
             self.quit.wait(1)
 
     def run(self):
@@ -244,7 +250,7 @@ class App:
         self.images = [Image.open(os.path.join(os.path.dirname(__file__), "web", f)) for f in
                        ("icon.png", "icon-active.png")]
         def id_label(_):   # l'ID lo chiedo all'agente: con il servizio i dati non sono leggibili dall'utente
-            st = api(self.port, "/api/public", timeout=1)
+            st = api(self.port, "/api/public", timeout=1, data_dir=self.data_dir)
             return f"ID {st['me']['fid']}" if st else "RemoteDesk"
         menu = pystray.Menu(
             pystray.MenuItem(id_label, None, enabled=False),
@@ -280,7 +286,8 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
-    data_dir = pick_data_dir(args.data, service=args.service or args.session_agent)
+    privileged = args.service or args.session_agent or args.install_service or args.uninstall_service
+    data_dir = pick_data_dir(args.data, service=privileged)
     mode = ("service" if args.service else "session-agent" if args.session_agent else
             "install" if args.install_service or args.uninstall_service else "app")
     setup_logging(data_dir, mode, args.verbose)
@@ -302,7 +309,7 @@ def main():
                 # gia' in esecuzione: apro solo la console
                 if not args.minimized:
                     from rd.agent import open_console
-                    open_console(args.port)
+                    open_console(args.port, data_dir=data_dir)
                 return
         App(args, data_dir).run()
 

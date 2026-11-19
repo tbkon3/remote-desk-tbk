@@ -6,16 +6,28 @@ Modalita' servizio: ferma l'attivita' "RemoteDesk", sostituisce Program Files\\R
 In entrambi i casi verifica che la nuova versione risponda; altrimenti ripristina la precedente.
 Solo libreria standard: non importa nulla dalla cartella che sta sostituendo."""
 import argparse
+from contextlib import contextmanager
 import ctypes
 import json
 import os
+from pathlib import Path
+import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
-import urllib.request
 
 NOWIN = 0x08000000
+
+
+def system_tool(name):
+    """Percorso assoluto dalla cartella di sistema restituita da Windows."""
+    buf = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(buf, len(buf))
+    if not 0 < length < len(buf):
+        raise OSError("cartella di sistema Windows non disponibile")
+    return os.path.join(buf.value, name)
 
 
 def log(msg):
@@ -44,18 +56,74 @@ def pid_alive(pid):
 
 
 def kill_under(folder):
-    """Chiude ogni processo il cui eseguibile sta in quella cartella."""
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith('"
-          + folder.rstrip("\\").replace("'", "''") + "\\', 'OrdinalIgnoreCase') } | "
+    """Termina soltanto l'avviatore e l'interprete del pacchetto."""
+    executables = (os.path.join(folder, "RemoteDesk.exe"), os.path.join(folder, "runtime", "pythonw.exe"))
+    paths = ",".join("'" + path.replace("'", "''") + "'" for path in executables)
+    ps = ("$paths=@(" + paths + "); Get-CimInstance Win32_Process | "
+          "Where-Object { $_.ExecutablePath -and ($paths -contains $_.ExecutablePath) } | "
           "ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null }")
-    run(["powershell", "-NoProfile", "-Command", ps])
+    run([system_tool(r"WindowsPowerShell\v1.0\powershell.exe"), "-NoProfile", "-Command", ps])
 
 
-def ping(port, version):
+def _receipt_path(data_dir, name):
+    return os.path.join(data_dir, ".update-" + name + ".json")
+
+
+def stage_root(data_dir, service):
+    # Il controllo di avvio del profilo SYSTEM esamina ricorsivamente i dati.
+    # Il runtime in staging non fa parte dei dati operativi della macchina.
+    return os.path.join(os.path.dirname(data_dir), "release-staging") if service else os.path.join(data_dir, "update")
+
+
+def _read_receipt(path):
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/public", timeout=3) as r:
-            return json.loads(r.read()).get("version") == version
-    except Exception:
+        with open(path, "rb") as f:
+            raw = f.read(4097)
+        if len(raw) <= 4096:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                return obj
+    except (OSError, ValueError, RecursionError):
+        pass
+    return {}
+
+
+def _write_receipt(path, obj):
+    fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def mark_stage_finished(source, base):
+    staged = Path(source).resolve()
+    job = staged.parent.parent
+    if (job.parent == Path(base).resolve() and job.name.startswith("release-")
+            and staged == job / "nuovo" / "RemoteDesk"):
+        _write_receipt(job / ".finished", {"version": 1})
+
+
+def clear_finished_stages(base):
+    for job in Path(base).glob("release-*"):
+        if (job.parent == Path(base) and job.is_dir() and job.resolve() == job.absolute()
+                and _read_receipt(job / ".finished") == {"version": 1}):
+            shutil.rmtree(job, ignore_errors=True)
+
+
+def acknowledge_start(data_dir, target, version):
+    """L'agente pronto conferma il challenge attraverso il proprio archivio protetto."""
+    request = _read_receipt(_receipt_path(data_dir, "pending"))
+    if (request.get("target") != os.path.normcase(os.path.realpath(target)) or request.get("version") != version
+            or not isinstance(request.get("nonce"), str) or len(request["nonce"]) != 64):
+        return False
+    try:
+        _write_receipt(_receipt_path(data_dir, "ready"), request)
+        return True
+    except OSError:
         return False
 
 
@@ -91,7 +159,7 @@ def start_tray_for_user(exe):
 
 def stop_old():
     if ARGS.mode == "service":
-        run(["schtasks", "/End", "/TN", "RemoteDesk"])
+        run([system_tool("schtasks.exe"), "/End", "/TN", "RemoteDesk"])
     else:
         t0 = time.time()
         while ARGS.pid and pid_alive(ARGS.pid) and time.time() - t0 < 20:
@@ -104,8 +172,10 @@ def stop_old():
 def start(target):
     exe = os.path.join(target, "RemoteDesk.exe")
     if ARGS.mode == "service":
-        code, out = run(["schtasks", "/Run", "/TN", "RemoteDesk"])
+        code, out = run([system_tool("schtasks.exe"), "/Run", "/TN", "RemoteDesk"])
         log(f"avvio servizio: {code} {out.strip()}")
+        if code != 0:
+            raise RuntimeError("riavvio del servizio non riuscito")
         log("icona utente: " + ("avviata" if start_tray_for_user(exe) else "nessun utente collegato"))
     else:
         extra = json.loads(ARGS.args or "[]")
@@ -124,6 +194,10 @@ def plain_copy(src, dst, *, follow_symlinks=True):
     return dst
 
 
+def _raise_oserror(error):
+    raise error
+
+
 def move_with_retry(src, dst, tries=15):
     for i in range(tries):
         try:
@@ -137,40 +211,103 @@ def move_with_retry(src, dst, tries=15):
             time.sleep(1)
 
 
+@contextmanager
+def installation_lock(target):
+    """Lock di kernel per installazione, condiviso anche da profili dati distinti."""
+    import msvcrt
+    # Il kernel rilascia il lock dopo un crash. Il file resta per non scollegare
+    # il lock di un altro processo che lo ha gia' aperto.
+    path = Path(target).with_name("." + Path(target).name + ".update.lock")
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_BINARY, 0o600)
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        try:
+            yield
+        finally:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(fd)
+
+
 def main():
     target = os.path.abspath(ARGS.target)
-    backup = target + ".precedente"
+    source_path, target_path = Path(ARGS.source).resolve(), Path(target).resolve()
+    if (source_path.is_relative_to(target_path) or target_path.is_relative_to(source_path)
+            or target_path.parent == target_path or target_path != Path(target)
+            or not (target_path / "app" / "remotedesk.py").is_file()
+            or not (source_path / "RemoteDesk.exe").is_file()):
+        raise ValueError("percorsi dell'aggiornamento non validi")
+    with installation_lock(target):
+        return update_locked(target)
+
+
+def update_locked(target):
+    transaction = secrets.token_hex(8)
+    backup = target + ".precedente-" + transaction
+    failed = target + ".fallito-" + transaction
+    data_dir = os.path.dirname(os.path.dirname(os.path.abspath(ARGS.log)))
+    receipt = {"target": os.path.normcase(os.path.realpath(target)), "version": ARGS.version,
+               "nonce": secrets.token_hex(32)}
+    pending, ready = (_receipt_path(data_dir, name) for name in ("pending", "ready"))
+    # Verifica l'accesso all'archivio protetto prima dell'interruzione.
+    _write_receipt(pending, receipt)
+    try:
+        result = replace_and_verify(target, backup, failed, ready, receipt)
+        if result in (0, 1, 2):
+            try:
+                mark_stage_finished(ARGS.source, stage_root(data_dir, ARGS.mode == "service"))
+            except OSError:
+                log("pulizia differita della cartella aggiornamento")
+        return result
+    finally:
+        for path in (pending, ready):
+            if _read_receipt(path) == receipt:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
+def replace_and_verify(target, backup, failed, ready, receipt):
     log(f"aggiornamento a {ARGS.version} ({ARGS.mode}) di {target}")
     stop_old()
-    if os.path.exists(backup):
-        shutil.rmtree(backup, ignore_errors=True)
     if not move_with_retry(target, backup):
         start(target)        # non sono riuscito a toccare nulla: riparto con la versione attuale
         return 1
     try:
         shutil.copytree(ARGS.source, target, ignore=shutil.ignore_patterns("__pycache__"), copy_function=plain_copy)
         old_data = os.path.join(backup, "data")   # vecchie versioni portabili con i dati accanto all'exe
-        if os.path.isdir(old_data) and not os.path.exists(os.path.join(target, "data")):
+        if ARGS.mode == "user" and os.path.isdir(old_data) and not os.path.exists(os.path.join(target, "data")):
+            # Le installazioni portabili storiche possono avere dati accanto all'exe.
+            # Un collegamento non deve far attraversare il confine del pacchetto.
+            for parent, dirs, files in os.walk(old_data, followlinks=False, onerror=_raise_oserror):
+                for path in (Path(parent), *(Path(parent) / name for name in dirs + files)):
+                    if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
+                        raise ValueError("collegamento nei dati portabili")
             shutil.copytree(old_data, os.path.join(target, "data"), copy_function=plain_copy)
     except Exception as e:
         log(f"copia non riuscita: {e}: ripristino")
-        shutil.rmtree(target, ignore_errors=True)
-        move_with_retry(backup, target)
+        if os.path.lexists(target) and not move_with_retry(target, failed):
+            return 3
+        if not move_with_retry(backup, target):
+            return 3
         start(target)
         return 1
-    start(target)
-    for _ in range(60):      # fino a 2 minuti per vedere la nuova versione rispondere
-        time.sleep(2)
-        if ping(ARGS.port, ARGS.version):
-            log("nuova versione attiva: aggiornamento completato")
-            shutil.rmtree(backup, ignore_errors=True)
-            return 0
+    try:
+        start(target)
+        for _ in range(60):
+            time.sleep(2)
+            if _read_receipt(ready) == receipt:
+                log("nuova versione attiva: aggiornamento completato")
+                shutil.rmtree(backup, ignore_errors=True)
+                return 0
+    except Exception as exc:
+        log(f"avvio non riuscito: {exc}")
     log("la nuova versione non risponde: torno alla precedente")
     stop_old()
-    failed = target + ".fallito"
-    shutil.rmtree(failed, ignore_errors=True)
-    move_with_retry(target, failed)
-    move_with_retry(backup, target)
+    if not move_with_retry(target, failed) or not move_with_retry(backup, target):
+        log(f"ripristino incompleto. Copia precedente conservata in {backup}")
+        return 3
     start(target)
     return 2
 
@@ -192,5 +329,5 @@ if __name__ == "__main__":
         log(f"errore inatteso: {e}")
         code = 3
     if ARGS.mode == "service":
-        run(["schtasks", "/Delete", "/TN", "RemoteDeskUpdate", "/F"])
+        run([system_tool("schtasks.exe"), "/Delete", "/TN", "RemoteDeskUpdate", "/F"])
     sys.exit(code)

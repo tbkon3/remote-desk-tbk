@@ -2,6 +2,7 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
+<script src="/web/local-api.js"></script>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RemoteDesk - Chat</title>
 <link rel="icon" href="/web/icon.png">
@@ -26,17 +27,28 @@ form textarea{flex:1;resize:none;height:42px}
 </head>
 <body>
 <header><img src="/web/icon.png" alt=""><div><div class="t">Assistenza remota</div><div class="s" id="who">Nessun tecnico collegato</div></div></header>
+<select id="peer" aria-label="Tecnico destinatario"></select>
 <div id="msgs"><div class="empty">Qui puoi scrivere al tecnico che ti sta assistendo.</div></div>
 <form id="f"><textarea id="txt" placeholder="Scrivi un messaggio... (Invio per inviare)"></textarea><button class="pri">Invia</button></form>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let lastId = -1;
+let lastId = -1, polling = false;
+$('peer').onchange = () => { lastId = -1; $('msgs').replaceChildren(); $('txt').value = ''; poll() };
 async function post(p, b){ const r = await fetch(p, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b||{})}); return r.json() }
 async function poll(){
+  if (polling) return;
+  polling = true;
+  const sid = $('peer').value;
   try {
-    const st = await (await fetch('/api/chat')).json();
+    const st = await (await fetch('/api/chat?sid=' + encodeURIComponent(sid))).json();
+    if (!Array.isArray(st.sessions) || $('peer').value !== sid) return;
+    const options = st.sessions.map(s => new Option(s.name + ' · ' + s.peer_name, s.sid));
+    $('peer').replaceChildren(...options);
+    if (options.some(o => o.value === sid)) $('peer').value = sid;
+    $('txt').disabled = !$('peer').value;
+    if ($('peer').value !== sid) { lastId = -1; $('msgs').replaceChildren(); return }
     $('who').textContent = st.sessions.length ? 'Collegato: ' + st.sessions.map(s => s.name).join(', ') : 'Nessun tecnico collegato';
     const newest = st.messages.length ? st.messages[st.messages.length - 1].id : 0;
     if (newest !== lastId) {
@@ -46,12 +58,13 @@ async function poll(){
         : '<div class="empty">Qui puoi scrivere al tecnico che ti sta assistendo.</div>';
       $('msgs').scrollTop = 1e9;
     }
-    await post('/api/chat/seen', {read: document.hasFocus() || !document.hidden});
-  } catch (e) { $('who').textContent = 'RemoteDesk non e\' in esecuzione' }
+    await post('/api/chat/seen', {sid, read: document.hasFocus() && !document.hidden});
+  } catch (e) { $('msgs').replaceChildren(); $('txt').disabled = true; $('who').textContent = 'Chat non disponibile' }
+  finally { polling = false }
 }
 $('f').onsubmit = async e => {
   e.preventDefault(); const t = $('txt').value.trim(); if (!t) return;
-  const r = await post('/api/chat/send', {text:t});
+  const r = await post('/api/chat/send', {text:t, sid:$('peer').value});
   if (r.error) { alert(r.error); return }
   $('txt').value = ''; poll();
 };

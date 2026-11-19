@@ -1,5 +1,12 @@
 # Novita'
 
+## 2.4.0 · sorgenti in revisione
+
+- Sessioni protocollo 2 con verifica di operatore e dispositivo, rinnovo a scadenza e controllo dei permessi sul PC assistito.
+- Inventario Windows in sola lettura e collegamento al portale Intune. Appunti manuali, chat per tecnico e cartella file confinata.
+- Configurazione di STUN, TURN/TLS e credenziali temporanee coturn. Indicazione del percorso ICE durante la sessione.
+- Protezioni del servizio, della console locale e degli aggiornamenti. Migrazione e collaudo tra due reti descritti nel README.
+
 ## 2.3.2
 - Corretto: "Esci" dall'icona nella barra non chiudeva RemoteDesk. Ora l'icona sparisce subito, le sessioni vengono
   chiuse in modo ordinato e il programma termina in pochi istanti (al massimo 10 secondi in ogni caso).
