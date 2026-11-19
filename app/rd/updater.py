@@ -6,6 +6,7 @@ Modalita' servizio: ferma l'attivita' "RemoteDesk", sostituisce Program Files\\R
 In entrambi i casi verifica che la nuova versione risponda; altrimenti ripristina la precedente.
 Solo libreria standard: non importa nulla dalla cartella che sta sostituendo."""
 import argparse
+import hashlib
 from contextlib import ExitStack, contextmanager
 from functools import lru_cache
 import ctypes
@@ -137,19 +138,18 @@ def portable_layout(target, data, install, machine_data, *, executable=None):
 def _metadata(target):
     meta = target / PORTABLE_META
     created = _item_id(meta, folder=True) is None
-    if os.name == "nt":
-        if __package__:
-            from .portable_storage import private_dir
-        else:
-            # The standalone helper was started from the verified staged app.
-            sys.path.insert(0, str(Path(__file__).parents[1]))
-            try:
-                from rd.portable_storage import private_dir
-            finally:
-                sys.path.pop(0)
-        private_dir(meta)
+    if __package__:
+        from .portable_storage import private_child
+        private_child(target, PORTABLE_META)
     else:
-        meta.mkdir(mode=0o700, exist_ok=True)
+        # Only the already pinned application root needs program-folder ACL
+        # checks. More distant ancestors need not be owned by this user.
+        sys.path.insert(0, str(Path(__file__).parents[1]))
+        try:
+            from rd.portable_storage import private_child
+            private_child(target, PORTABLE_META)
+        finally:
+            sys.path.pop(0)
     with portable_anchor(meta) as pinned:
         marker = pinned / "format"
         if created and not any(pinned.iterdir()):
@@ -174,8 +174,9 @@ def _local_lock(path):
         if h == ctypes.c_void_p(-1).value:
             raise OSError("Altra operazione in corso o file di lock non accessibile")
         try:
-            attrs = (wintypes.DWORD * 2)()
-            if not scope._k32.GetFileInformationByHandleEx(h, 9, attrs, ctypes.sizeof(attrs)) or attrs[0] & 0x410:
+            info = (wintypes.DWORD * 13)()  # BY_HANDLE_FILE_INFORMATION, including link count
+            scope._k32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+            if not scope._k32.GetFileInformationByHandle(h, info) or info[0] & 0x410 or info[10] != 1:
                 raise PermissionError("Lock aggiornamento non regolare")
             yield
         finally:
@@ -205,6 +206,7 @@ def portable_preflight(target, data, install, machine_data, executable):
                 with tempfile.TemporaryDirectory(prefix="probe-", dir=meta) as probe:
                     (Path(probe) / "before").mkdir()
                     (Path(probe) / "before").rename(Path(probe) / "after")
+                return ":".join(map(str, _item_id(root, folder=True)))
     except OSError as exc:
         raise RuntimeError(f"La copia portabile non è aggiornabile in {target}: {exc}") from exc
 
@@ -514,18 +516,21 @@ def _portable_args(raw, data):
 
 @contextmanager
 def _copy_instance(target, data):
-    if __package__:
-        from .portable import Instance
-    else:
+    standalone = not __package__
+    if standalone:
         sys.path.insert(0, str(Path(__file__).parents[1]))
-        try:
+    try:
+        if standalone:
             from rd.portable import Instance
-        finally:
+        else:
+            from .portable import Instance
+        with Instance(target, str(data)) as lock:
+            if not lock.owner:
+                raise RuntimeError("La copia o il profilo sono in uso; chiudere l'istanza prima del recupero")
+            yield
+    finally:
+        if standalone:
             sys.path.pop(0)
-    with Instance(target, str(data)) as lock:
-        if not lock.owner:
-            raise RuntimeError("La copia o il profilo sono in uso; chiudere l'istanza prima del recupero")
-        yield
 
 
 def _protect_new_component(path):
@@ -688,7 +693,6 @@ def _prepare_members(target, source, job):
         _protect_new_component(candidate / name)
         new[name] = _identity(candidate, name)
         if name == "RemoteDesk.exe" and old[name] is not None:
-            import hashlib
             # The small native stub is identical in many releases. Keeping it in
             # place avoids an unnecessary interval without a launcher after a crash.
             with (candidate / name).open("rb") as a, (target / name).open("rb") as b:
@@ -822,6 +826,9 @@ def _portable_helper(source_path, target_path):
     _require_user_account()
     with (portable_anchor(source_path) as source, portable_anchor(target_path) as target,
           portable_anchor(Path(ARGS.log).parent.parent) as data, portable_anchor(data / "logs")):
+        expected = getattr(ARGS, "target_id", None)
+        if expected is not None and expected != ":".join(map(str, _item_id(target, folder=True))):
+            raise PermissionError("La cartella portabile attiva è stata sostituita")
         interpreters = [source / "runtime/pythonw.exe"]
         if getattr(ARGS, "recover", False):
             interpreters.append(source / "runtime/python.exe")
@@ -975,6 +982,7 @@ if __name__ == "__main__":
     ap.add_argument("--pid", type=int, default=0)
     ap.add_argument("--args", default="[]", help="opzioni di avvio originali (modalita' utente)")
     ap.add_argument("--prepare-token", help=argparse.SUPPRESS)
+    ap.add_argument("--target-id", help=argparse.SUPPRESS)
     ap.add_argument("--recover", action="store_true", help="Ripristina la transazione interrotta senza avviare l'app")
     ARGS = ap.parse_args()
     try:

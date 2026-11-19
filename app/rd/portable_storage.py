@@ -14,6 +14,7 @@ SYSTEM = "S-1-5-18"
 ADMINS = "S-1-5-32-544"
 TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 CREATOR_OWNER = "S-1-3-0"
+OWNER_RIGHTS = "S-1-3-4"
 DENIED = "La cartella dati portabile richiede proprietario, permessi e collegamenti sicuri"
 PROFILE_FILES = ("config.json", "config.json.bak", "machine.key", "local.token", "audit.jsonl",
                  "instance.json", "portable.lock", ".portable-update.lock",
@@ -38,7 +39,9 @@ def _check_acl(owner, entries, user, *, private, directory):
             continue
         if kind != 0:
             raise PermissionError(f"Tipo ACE non riconosciuto: tipo={kind} flags=0x{flags:02x} mask=0x{mask:08x}")
-        if sid in trusted:
+        # MS-DTYP OWNER RIGHTS denotes this object's current owner. Validate
+        # the actual owner above, including independently for each existing file.
+        if sid in trusted or sid == OWNER_RIGHTS:
             if mask & 0x1f01ff == 0x1f01ff and not flags & 4:  # no NO_PROPAGATE
                 inherit |= flags & 3
             continue
@@ -172,26 +175,52 @@ def private_dir(path, *, profile=False, files=()):
         _children(target, files, profile, win.inspect)
 
 
-def _posix_dir(target, files, profile):
-    @contextmanager
-    def inspect(path, *, private, directory):
-        info = path.lstat()
-        if directory != stat.S_ISDIR(info.st_mode) or (not directory and
-                (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1)):
+def private_child(pinned_parent, name):
+    """Private update directory under a parent and ancestors already pinned by the caller."""
+    parent = Path(pinned_parent)
+    if not parent.is_absolute() or ".." in parent.parts:
+        raise PermissionError(DENIED)
+    child = parent / component(name)
+    if os.name == "nt":
+        win = _Storage()
+        if len(parent.drive) != 2 or win.drive_type(parent.anchor) not in (2, 3):
             raise PermissionError(DENIED)
-        if private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
-            raise PermissionError(DENIED)
-        if not private and (info.st_uid not in (0, os.getuid()) or
-                            (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX)):
-            raise PermissionError(DENIED)
-        yield
+        inspect, create = win.inspect, win.create_private
+    else:
+        inspect = _posix_inspect
+        def create(path):
+            path.mkdir(mode=0o700, exist_ok=True)
+    with inspect(parent, private=False, directory=True):
+        try:
+            with inspect(child, private=True, directory=True):
+                return child
+        except FileNotFoundError:
+            create(child)
+        with inspect(child, private=True, directory=True):
+            return child
 
+
+@contextmanager
+def _posix_inspect(path, *, private, directory):
+    info = path.lstat()
+    if directory != stat.S_ISDIR(info.st_mode) or (not directory and
+            (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1)):
+        raise PermissionError(DENIED)
+    if private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
+        raise PermissionError(DENIED)
+    if not private and (info.st_uid not in (0, os.getuid()) or
+                        (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX)):
+        raise PermissionError(DENIED)
+    yield
+
+
+def _posix_dir(target, files, profile):
     for path in (*reversed(target.parents), target):
         try:
-            with inspect(path, private=path == target, directory=True):
+            with _posix_inspect(path, private=path == target, directory=True):
                 pass
         except FileNotFoundError:
             path.mkdir(mode=0o700, exist_ok=True)
-            with inspect(path, private=True, directory=True):
+            with _posix_inspect(path, private=True, directory=True):
                 pass
-    _children(target, files, profile, inspect)
+    _children(target, files, profile, _posix_inspect)

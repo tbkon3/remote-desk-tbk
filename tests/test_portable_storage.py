@@ -14,6 +14,15 @@ from rd import portable_storage as storage
 
 
 class PortableAclPolicy(unittest.TestCase):
+    def test_owner_rights_resolves_to_independently_verified_owner(self):
+        owner_ace = [(0, 3, 0x1f01ff, storage.OWNER_RIGHTS)]
+        for private in (False, True):
+            for directory in (False, True):
+                settings = dict(private=private, directory=directory)
+                storage._check_acl("user", owner_ace, "user", **settings)
+                with self.assertRaisesRegex(PermissionError, "Proprietario"):
+                    storage._check_acl("foreign", owner_ace, "user", **settings)
+
     def test_ordinary_private_profile_and_stock_windows_ancestors(self):
         user = "user"
         private = [(0, 19, 0x1f01ff, sid) for sid in (storage.SYSTEM, storage.ADMINS, user)]
@@ -56,10 +65,10 @@ class NativePortableStorage(unittest.TestCase):
                     yield
         self.enterContext(patch.object(storage._Storage, "inspect", fixture_ancestry))
 
-    def create_readable(self, path, *, directory=False):
+    def create_readable(self, path, *, directory=False, rights="FR"):
         win = self.win
         descriptor = storage.PTR()
-        sddl = f"D:P(A;OICI;FA;;;{win.user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;WD)"
+        sddl = f"D:P(A;OICI;FA;;;{win.user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;{rights};;;WD)"
         storage._require(win.descriptor(sddl, 1, ct.byref(descriptor), None))
         try:
             access = storage._SecurityAttributes(ct.sizeof(storage._SecurityAttributes), descriptor, 0)
@@ -144,6 +153,20 @@ class NativePortableStorage(unittest.TestCase):
         with self.assertRaises(PermissionError):
             storage.private_dir(self.root, files=("legacy.json",))
         self.assertEqual(original.read_text(), "fixture")
+
+    def test_private_child_under_pinned_local_bundle(self):
+        parent = self.root / "readable-bundle"
+        self.create_readable(parent, directory=True)
+        self.assertEqual(storage.private_child(parent, "metadata"), parent / "metadata")
+        self.assertEqual(storage.private_child(parent, "metadata"), parent / "metadata")
+        self.create_readable(parent / "insecure", directory=True)
+        with self.assertRaises(PermissionError):
+            storage.private_child(parent, "insecure")
+        dangerous = self.root / "replaceable-child"
+        self.create_readable(dangerous, directory=True, rights="0x40")
+        with self.assertRaises(PermissionError):
+            storage.private_child(dangerous, "metadata")
+        self.assertFalse((dangerous / "metadata").exists())
 
 
 if __name__ == "__main__":

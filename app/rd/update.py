@@ -166,7 +166,7 @@ class Updater:
             if self.agent.service_mode and Path(base).resolve().is_relative_to(Path(target).resolve()):
                 raise RuntimeError("I dati aggiornamento devono essere esterni alla cartella applicazione")
             if not self.agent.service_mode:
-                portable_preflight(ROOT_DIR, self.agent.data_dir, INSTALL_DIR, PROGRAM_DATA, sys.executable)
+                target_id = portable_preflight(ROOT_DIR, self.agent.data_dir, INSTALL_DIR, PROGRAM_DATA, sys.executable)
                 for volume in (ROOT_DIR, self.agent.data_dir):
                     if shutil.disk_usage(volume).free < int(info["size"]) + 32 * 1024**2:
                         raise RuntimeError(f"Spazio insufficiente per preparare la copia in {volume}")
@@ -191,7 +191,7 @@ class Updater:
                 self._launch_updater(staged, info["version"])
             else:
                 nonce = secrets.token_hex(32)
-                process = self._launch_updater(staged, info["version"], prepare_token=nonce)
+                process = self._launch_updater(staged, info["version"], prepare_token=nonce, target_id=target_id)
                 try:
                     marker = Path(staged).parent
                     deadline = time.monotonic() + 300
@@ -261,7 +261,7 @@ class Updater:
             finally:
                 raise
 
-    def _launch_updater(self, staged, version, *, prepare_token=None):
+    def _launch_updater(self, staged, version, *, prepare_token=None, target_id=None):
         from . import winapi as W
         pyw = os.path.join(staged, "runtime", "pythonw.exe")
         script = os.path.join(staged, "app", "rd", "updater.py")
@@ -303,6 +303,8 @@ class Updater:
                    "--args", json.dumps([a for a in sys.argv[1:] if a != "--minimized"])]
             if prepare_token:
                 cmd.extend(("--prepare-token", prepare_token))
+            if target_id:
+                cmd.extend(("--target-id", target_id))
             try:
                 return subprocess.Popen(cmd, creationflags=flags | 0x01000000, close_fds=True, cwd=staged)
             except OSError:

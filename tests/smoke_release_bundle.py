@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -208,8 +209,10 @@ def smoke(archive, version=VERSION):
             # LocalAppData, just as the production portable launcher does.
             from rd.common import known_folder
             from rd.portable_storage import private_dir
-            profile = Path(stack.enter_context(tempfile.TemporaryDirectory(
-                dir=known_folder(0x1c), prefix="RemoteDesk smoke ")))
+            profile = Path(known_folder(0x1c)) / ("RemoteDesk smoke " + secrets.token_hex(16))
+            require(not profile.exists(), "Fixture profile already exists")
+            private_dir(profile)
+            stack.callback(shutil.rmtree, profile)
             data = profile / "agent data"
             private_dir(data)
         else:

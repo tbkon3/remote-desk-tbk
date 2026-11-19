@@ -21,11 +21,8 @@ from rd import updater as helper
 
 class PortableUpdateTests(unittest.TestCase):
     def setUp(self):
-        # Filesystem objects, sharing and renames are real. ACL and instance
-        # ownership have dedicated native/offline tests and a Windows smoke test.
-        private = patch("rd.portable_storage.private_dir", side_effect=lambda path, **kw: Path(path).mkdir(mode=0o700, exist_ok=True))
-        private.start()
-        self.addCleanup(private.stop)
+        # Keep the process coordination fixture separate from the user's real profile.
+        # Paths, ACLs, file identities, locks, copies and renames remain native.
         lock = patch.object(helper, "_copy_instance", side_effect=lambda *_: contextlib.nullcontext())
         lock.start()
         self.addCleanup(lock.stop)
@@ -223,9 +220,10 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
                                     port=48000, stop_event=asyncio.Event())
             manager = update.Updater(agent)
 
-            def launch(staged, version, *, prepare_token):
+            def launch(staged, version, *, prepare_token, target_id):
                 self.assertEqual(version, body["version"])
                 self.assertEqual(update.ROOT_DIR, str(target))
+                self.assertEqual(target_id, ":".join(map(str, helper._item_id(target, folder=True))))
                 self.assertTrue(Path(staged).is_relative_to(data / "update"))
                 self.assertEqual((Path(staged) / "RemoteDesk.exe").read_bytes(), b"new")
                 helper._write_receipt(Path(staged).parent / ".prepared", {"nonce": prepare_token})
@@ -238,7 +236,6 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
             with (patch.object(update, "WIN", True), patch.object(update, "ROOT_DIR", str(target)),
                   patch.object(sys, "executable", str(target / "runtime/pythonw.exe")), patch.object(update, "RELEASE_PUB", pub),
                   patch.object(update, "ClientSession", Transport), patch.object(asyncio, "sleep", sleep),
-                  patch("rd.portable_storage.private_dir", side_effect=lambda p, **kw: Path(p).mkdir(mode=0o700, exist_ok=True)),
                   patch.object(manager, "_launch_updater", side_effect=launch) as started):
                 for auto, busy in [(False, False), (True, True), (True, False)]:
                     agent.cfg["auto_update"] = auto

@@ -27,6 +27,10 @@ Dalla 2.4.1 estrai l'intero ZIP in una cartella locale in cui il tuo account Win
 
 Per spostare la copia, chiudila dall'icona, sposta la cartella completa e riaprila con lo stesso account Windows. Il profilo portabile resta nel profilo utente del PC. Su una postazione con servizio già installato, la prima estrazione della 2.4.1 può creare un nuovo ID portabile. In questo caso scegli **Entra in una rete esistente** per registrarlo. Per usare di nuovo il servizio, apri la sua icona dalla postazione amministrata.
 
+La copia portabile conserva i componenti sostituiti in `.remotedesk-update\<identificativo>\previous` nella cartella del programma. Qui ritrovi anche eventuali file aggiunti in passato dentro `app` o `runtime`. Gli altri file presenti accanto a `RemoteDesk.exe` restano al loro posto. Prevedi spazio libero per il download, l'estrazione e la copia precedente.
+
+Se manca corrente durante la sostituzione e il programma non si apre, conserva la cartella e i suoi backup. Puoi ripartire estraendo lo ZIP ufficiale verificato in una nuova cartella e avviandolo con lo stesso account. Il profilo Windows mantiene l'identità della copia portabile. Se usavi un collegamento con `--data`, mantieni il percorso del profilo indicato in quel collegamento.
+
 Se la console 2.3.2 mostra ancora il vecchio servizio dopo un aggiornamento, puoi passare direttamente al portabile estraendo lo ZIP 2.4.1 in una nuova cartella. Chiudi la vecchia finestra e apri la console dall'icona della nuova copia.
 
 ## Aggiornamento da 2.3.2
