@@ -15,7 +15,7 @@ from rd.updater import system_tool
 
 
 class ServiceStorageTests(unittest.TestCase):
-    def run_repair_fixture(self, cases):
+    def run_repair_fixture(self, cases, fixture_dir=None):
         script = Path(__file__).resolve().parents[1] / "tools" / "Ripara-permessi-servizio.ps1"
         # Import only function definitions. No entry point, elevation, scheduler or host ACLs.
         fixture = r"""
@@ -47,11 +47,14 @@ function Inspect-ReleaseParent($raw) {
 }
 """
         shell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
+        env = {**os.environ, "RD_TEST_REPAIR": str(script)}
+        if fixture_dir is not None:
+            env["RD_TEST_DIR"] = str(fixture_dir)
         result = subprocess.run(
             [shell, "-NoProfile", "-NonInteractive", "-Command",
              "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"],
             input=fixture + common.WINDOWS_PRIVATE_DIRECTORY_POLICY + "\n" + cases,
-            text=True, capture_output=True, timeout=30, env={**os.environ, "RD_TEST_REPAIR": str(script)})
+            text=True, capture_output=True, timeout=30, env=env)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     @unittest.skipUnless(os.name == "nt", "descrittori di sicurezza Windows")
@@ -127,6 +130,84 @@ foreach ($sddl in $invalid) {
     if ($raw.GetSddlForm('All') -cne $original) { throw 'inspection altered a rejected descriptor' }
 }
 """)
+
+    @unittest.skipUnless(os.name == "nt", "dispatcher PowerShell Windows")
+    def test_repair_is_read_only_by_default_and_aborts_before_writing(self):
+        self.run_repair_fixture(r"""
+$script:paths = [pscustomobject]@{Parent='C:\Synthetic\ProgramData\RemoteDesk'}
+$script:approved = Descriptor ('O:BAG:SYD:AI' + $required + $legacy + $readable)
+function Test-RepairContext {}
+function Initialize-RepairNative {}
+function Get-RepairPaths { return $script:paths }
+function Get-VerifiedRepairState($target) {
+    if ($target -ne $script:paths) { throw 'wrong paths' }
+    $script:checks++
+    if ($script:state -eq 'Rejected') { throw 'resources not trusted' }
+    return [pscustomobject]@{Plan=$script:state;Descriptor=$script:approved}
+}
+function Set-ParentDacl($target,$descriptor) {
+    if ($target -ne $script:paths -or $descriptor -ne $script:approved) { throw 'wrong target or descriptor' }
+    $script:writes++
+}
+foreach ($case in 'audit','apply','safe','rejected') {
+    $script:checks = $script:writes = 0
+    $script:state = switch ($case) {'safe' {'Safe'}; 'rejected' {'Rejected'}; default {'Legacy'}}
+    $rejected = $false
+    try {
+        $outcome = if ($case -eq 'audit') { Invoke-RemoteDeskRepair } else { Invoke-RemoteDeskRepair -Apply }
+    } catch { if ($_.Exception.Message -ne 'resources not trusted') { throw }; $rejected = $true }
+    $pattern = switch ($case) {'audit' {'^REPAIRABLE'}; 'apply' {'^REPAIRED'}; 'safe' {'^SAFE'}}
+    if (($case -ne 'rejected' -and $outcome -notmatch $pattern) -or $rejected -ne ($case -eq 'rejected') -or
+        $script:checks -ne 1 -or $script:writes -ne [int]($case -eq 'apply')) { throw "unexpected actions: $case" }
+}
+""")
+
+    @unittest.skipUnless(os.name == "nt", "descrittori di sicurezza Windows")
+    def test_repair_aborts_if_parent_dacl_changes_after_audit(self):
+        self.run_repair_fixture(r"""
+$original = Descriptor ('O:BAG:SYD:AI' + $required + $legacy + $readable)
+$script:observed = Descriptor ('O:BAG:SYD:AI' + $required + $legacy + $readable + '(A;;DC;;;WD)')
+function Get-RdDescriptor($p) { return $script:observed }
+function Assert-RdOnlyData($paths) { throw 'write preparation must not be reached' }
+$rejected = $false
+try { Set-ParentDacl ([pscustomobject]@{Parent='C:\Synthetic\ProgramData\RemoteDesk'}) $original }
+catch {
+    if ($_.Exception.Message -notmatch 'DACL cambiata') { throw }
+    $rejected = $true
+}
+if (!$rejected) { throw 'changed descriptor accepted' }
+""")
+
+    @unittest.skipUnless(os.name == "nt", "collegamenti NTFS Windows")
+    def test_repair_refuses_existing_junction_and_hardlinked_file(self):
+        import _winapi
+        with tempfile.TemporaryDirectory(prefix="rd-links-") as temporary:
+            root = Path(temporary)
+            real_data = root / "fixture-data"
+            real_data.mkdir()
+            (real_data / "marker").write_bytes(b"private fixture")
+            original = root / "original.txt"
+            original.write_bytes(b"linked fixture")
+            os.link(original, root / "alias.txt")
+            junction = root / "data"
+            _winapi.CreateJunction(str(real_data), str(junction))
+            try:
+                self.run_repair_fixture(r"""
+$rejected = $false
+try { Assert-RdTree ([IO.Path]::Combine($env:RD_TEST_DIR,'data')) -Private }
+catch { if ($_.Exception.Message -notmatch 'reparse point') { throw }; $rejected = $true }
+if (!$rejected) { throw 'preexisting junction accepted' }
+Initialize-RepairNative
+[RemoteDeskRepair.Native]::SingleFile([IO.Path]::Combine($env:RD_TEST_DIR,'fixture-data','marker'))
+$rejected = $false
+try { [RemoteDeskRepair.Native]::SingleFile([IO.Path]::Combine($env:RD_TEST_DIR,'alias.txt')) }
+catch { if ($_.Exception.Message -notmatch 'nomi aggiuntivi') { throw }; $rejected = $true }
+if (!$rejected) { throw 'hard link accepted' }
+""", root)
+            finally:
+                junction.rmdir()
+            self.assertEqual((real_data / "marker").read_bytes(), b"private fixture")
+            self.assertEqual(original.read_bytes(), b"linked fixture")
 
     @unittest.skipUnless(os.name == "nt", "Task Scheduler Windows simulato")
     def test_migrates_only_known_task_and_preserves_dacl(self):

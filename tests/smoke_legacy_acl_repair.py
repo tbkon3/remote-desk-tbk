@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import secrets
 import shutil
-import subprocess
 import sys
 import tempfile
 
@@ -51,7 +50,7 @@ def run_repair(apply, expected):
     from rd.updater import system_tool
     shell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
     script = fixture.REPO / "tools/Ripara-permessi-servizio.ps1"
-    args = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script]
+    args = [shell, "-NoProfile", "-NonInteractive", "-File", script]
     if apply:
         args.append("-Apply")
     result = fixture.run(args, timeout=360)
@@ -87,11 +86,21 @@ def owned_registry(marker):
     handle, disposition = wt.HANDLE(), wt.DWORD()
     key_name = r"SOFTWARE\RemoteDesk"
     # HKEY_LOCAL_MACHINE is a sign-extended predefined handle on 64-bit Windows.
-    result = create(wt.HANDLE(-2147483646), key_name, 0, None, 0, winreg.KEY_ALL_ACCESS | winreg.KEY_WOW64_64KEY,
-                    None, ctypes.byref(handle), ctypes.byref(disposition))
+    from rd.local_access_win import _SecurityAttributes, _Windows
+    win = _Windows()
+    descriptor = wt.LPVOID()
+    if not win.descriptor("O:BAG:BAD:P(A;CI;KA;;;BA)(A;CI;KA;;;SY)", 1, ctypes.byref(descriptor), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        sa = _SecurityAttributes(ctypes.sizeof(_SecurityAttributes), descriptor, False)
+        result = create(wt.HANDLE(-2147483646), key_name, 0, None, 0, winreg.KEY_ALL_ACCESS | winreg.KEY_WOW64_64KEY,
+                        ctypes.byref(sa), ctypes.byref(handle), ctypes.byref(disposition))
+    finally:
+        win.free(descriptor)
     if result:
         raise ctypes.WinError(result)
-    with winreg.HKEYType(handle.value) as key:
+    key = handle.value
+    try:
         fixture.require(disposition.value == 1, "Chiave del servizio preesistente: prova annullata")
         winreg.SetValueEx(key, "RD-CI-Owner", 0, winreg.REG_SZ, marker)
         try:
@@ -101,6 +110,8 @@ def owned_registry(marker):
             fixture.require(winreg.QueryValueEx(key, "RD-CI-Owner") == (marker, winreg.REG_SZ)
                             and winreg.QueryInfoKey(key)[0] == 0, "Cleanup registro rifiutato")
             winreg.DeleteKeyEx(winreg.HKEY_LOCAL_MACHINE, key_name, winreg.KEY_WOW64_64KEY)
+    finally:
+        winreg.CloseKey(key)
 
 
 def preflight(new, data, installed, temp, before):
