@@ -28,20 +28,29 @@ def snapshot(parent):
     # The staging runtime is copied only after this test finishes its repair assertions.
     # Record every existing private directory, file, descriptor and content hash.
     payload = fixture.powershell(r"""
-$base = Get-Item -LiteralPath $env:RD_TEST_PARENT
-$rootAcl = Get-Acl -LiteralPath $base.FullName
+$base = [IO.DirectoryInfo]::new($env:RD_TEST_PARENT)
+$sections = [Security.AccessControl.AccessControlSections]'Owner,Group,Access'
+$rootAcl = $base.GetAccessControl($sections)
 $raw = [Security.AccessControl.RawSecurityDescriptor]::new($rootAcl.GetSecurityDescriptorBinaryForm(), 0)
 $entries = @(foreach ($entry in $raw.DiscretionaryAcl) {
     [pscustomobject]@{sid=$entry.SecurityIdentifier.Value; type=[int]$entry.AceType;
         flags=[int]$entry.AceFlags; mask=$entry.AccessMask}
 })
-$tree = @(foreach ($f in (Get-ChildItem -LiteralPath $base.FullName -Force -Recurse | Sort-Object FullName)) {
+$tree = @(foreach ($f in ($base.EnumerateFileSystemInfos('*',[IO.SearchOption]::AllDirectories) | Sort-Object FullName)) {
+    $hash = ''
+    if ($f -is [IO.FileInfo]) {
+        $stream = $f.OpenRead()
+        try {
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { $hash = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-','') }
+            finally { $sha.Dispose() }
+        } finally { $stream.Dispose() }
+    }
     [pscustomobject]@{path=$f.FullName.Substring($base.FullName.Length);
-        acl=(Get-Acl -LiteralPath $f.FullName).Sddl;
-        sha=if (!$f.PSIsContainer) { (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash } else { '' }}
+        acl=$f.GetAccessControl($sections).GetSecurityDescriptorSddlForm($sections); sha=$hash}
 })
 [pscustomobject]@{owner=$raw.Owner.Value; group=$raw.Group.Value; protected=$rootAcl.AreAccessRulesProtected;
-    sddl=$rootAcl.Sddl; entries=$entries; tree=$tree} | ConvertTo-Json -Depth 5 -Compress
+    sddl=$rootAcl.GetSecurityDescriptorSddlForm($sections); entries=$entries; tree=$tree} | ConvertTo-Json -Depth 5 -Compress
 """, dict(os.environ, RD_TEST_PARENT=str(parent)))
     return json.loads(payload)
 
@@ -270,11 +279,18 @@ def main():
                     "Il candidato deve essere lo ZIP 2.4.0 pubblicato")
     sys.path.insert(0, str(fixture.REPO / "app"))
     from rd.release_package import extract_package
+    from rd.updater import system_tool
+    # This process only launches Desktop PowerShell 5.1. A pwsh 7 Actions step can
+    # export incompatible module paths. Do not change the runner or user's configuration.
+    from unittest.mock import patch
+    modules = Path(system_tool(r"WindowsPowerShell\v1.0\powershell.exe")).parent / "Modules"
+    fixture.require(modules.is_dir(), "Cartella moduli Windows PowerShell di sistema assente")
     with tempfile.TemporaryDirectory(prefix="rd-acl-ci-", dir=os.environ["RUNNER_TEMP"]) as td:
         temp = Path(td).resolve()
         old = Path(extract_package(args.legacy_zip, temp / "legacy"))
         new = Path(extract_package(args.candidate_zip, temp / "published"))
-        exercise(old, new, temp)
+        with patch.dict(os.environ, {"PSModulePath": str(modules)}):
+            exercise(old, new, temp)
 
 
 if __name__ == "__main__":
