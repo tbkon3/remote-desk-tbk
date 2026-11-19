@@ -65,7 +65,7 @@ def _verify_installation():
     # erediterebbero i nuovi oggetti creati a esecuzione iniziata.
     command = WINDOWS_ANCESTOR_POLICY + r"""
 $ErrorActionPreference = 'Stop'
-$programs = [Environment]::GetFolderPath('ProgramFiles')
+$programs = $env:RD_PROGRAMS_ROOT
 Assert-TrustedAncestry $programs
 $root = Join-Path $programs 'RemoteDesk'
 $trusted = @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
@@ -93,7 +93,8 @@ while ($stack.Count) {
     powershell = system_tool(r"WindowsPowerShell\v1.0\powershell.exe")
     system_dir = os.path.dirname(system_tool("schtasks.exe"))
     safe_env = {"SystemRoot": os.path.dirname(system_dir), "Path": system_dir,
-                "PSModulePath": os.path.join(os.path.dirname(powershell), "Modules")}
+                "PSModulePath": os.path.join(os.path.dirname(powershell), "Modules"),
+                "RD_PROGRAMS_ROOT": os.path.dirname(INSTALL_DIR)}
     result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", command],
                             env=safe_env, cwd=system_dir, timeout=180, capture_output=True, creationflags=0x08000000)
     if result.returncode:

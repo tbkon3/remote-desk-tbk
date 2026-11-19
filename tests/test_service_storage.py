@@ -131,11 +131,14 @@ exit 0
         with (tempfile.TemporaryDirectory() as tmp, patch.object(common, "WIN", True),
               patch.object(common, "PROGRAM_DATA", str(Path(tmp) / "managed" / "data")),
               patch("rd.updater.system_tool", side_effect=lambda name: str(Path(tmp) / "system" / name)),
-              patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=1)) as launch,
+              patch.object(subprocess, "run", return_value=SimpleNamespace(
+                  returncode=1, stdout=b"RDACL system parent; ancestor replacement; S-1-5-32-545; 00000040\r\n")) as launch,
               patch.object(common, "_private_files_single_link") as inspect):
-            with self.assertRaises(PermissionError):
+            with self.assertRaisesRegex(PermissionError, "ancestor replacement.*00000040"):
                 common.secure_dir(common.PROGRAM_DATA)
             self.assertEqual(launch.call_args.kwargs["env"]["RD_DATA_TARGET"], common.PROGRAM_DATA)
+            self.assertEqual(launch.call_args.kwargs["env"]["RD_COMMON_ROOT"], str(Path(common.PROGRAM_DATA).parent.parent))
+            self.assertNotIn("GetFolderPath", launch.call_args.args[0][-1])
             inspect.assert_not_called()
 
     def test_only_single_link_files_in_private_tree(self):

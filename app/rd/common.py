@@ -98,6 +98,7 @@ def secure_dir(d, *, existing=False):
     system_dir = os.path.dirname(system_tool("whoami.exe"))
     env = {"SystemRoot": os.path.dirname(system_dir), "PATH": system_dir,
            "PSModulePath": os.path.join(os.path.dirname(shell), "Modules"), "RD_DATA_TARGET": str(target),
+           "RD_COMMON_ROOT": str(root.parent),
            "RD_DATA_EXISTING": "1" if existing else "0"}
     command = "$ErrorActionPreference='Stop'\ntry {\n" + DATA_DIRECTORY_POLICY + r"""
 } catch {
@@ -215,7 +216,7 @@ function Inspect([string]$p) {
 
 DATA_DIRECTORY_POLICY = WINDOWS_ANCESTOR_POLICY + r"""
 $ErrorActionPreference = 'Stop'
-$common = [Environment]::GetFolderPath('CommonApplicationData')
+$common = $env:RD_COMMON_ROOT
 $base = Join-Path $common 'RemoteDesk'
 $trusted = @('S-1-5-18','S-1-5-32-544')
 $acl = [Security.AccessControl.DirectorySecurity]::new()
