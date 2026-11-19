@@ -157,11 +157,14 @@ def owner_headers(local_access, port, data, method, path):
 
 def probe(root, data, port):
     # This branch is invoked by the Python executable INSIDE the candidate ZIP.
-    require(Path(sys.executable).resolve() == (root / "runtime/python.exe").resolve(), "Unexpected probe runtime")
+    root = root.resolve(strict=True)  # hosted runners can supply an 8.3 alias for %TEMP%
+    runtime = (root / "runtime").resolve(strict=True)
+    require(Path(sys.executable).resolve() == (runtime / "python.exe").resolve(), "Unexpected probe runtime")
     sys.path.insert(0, str(root / "app"))
     for name in ("aiohttp", "aiortc", "aioice", "av", "cryptography", "mss", "PIL.Image", "pystray", "pyaudiowpatch"):
         module = importlib.import_module(name)
-        require(Path(module.__file__).resolve().is_relative_to(root / "runtime"), f"Dependency outside artifact: {name}")
+        origin = Path(module.__file__).resolve(strict=True)
+        require(origin.is_relative_to(runtime), f"Dependency outside artifact: {name}: {origin} (expected under {runtime})")
     from PIL import Image
     from rd import common, local_access
     require(common.VERSION == VERSION, "Incorrect package version")
