@@ -53,11 +53,16 @@ def standard_account():
     require(result == 0, f"Unable to create the private standard account ({result})")
     sid = None
     try:
-        sid = support.powershell(r"""
+        identities = support.powershell(r"""
 $account=[Security.Principal.NTAccount]::new($env:COMPUTERNAME,$env:RD_SMOKE_ACCOUNT)
 $account.Translate([Security.Principal.SecurityIdentifier]).Value
-""", dict(os.environ, RD_SMOKE_ACCOUNT=name)).decode("ascii").strip()
+[Security.Principal.SecurityIdentifier]::new('S-1-5-32-545').Translate([Security.Principal.NTAccount]).Value.Split('\')[-1]
+""", dict(os.environ, RD_SMOKE_ACCOUNT=name)).decode("utf8").splitlines()
+        sid, group = (value.strip() for value in identities)
         require(sid.startswith("S-1-5-21-") and sid.rsplit("-", 1)[-1].isdigit(), "Unexpected local SID")
+        member = wt.LPWSTR(os.environ["COMPUTERNAME"] + "\\" + name)
+        join = winfn(dll, "NetLocalGroupAddMembers", wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, wt.LPVOID, wt.DWORD)
+        require(join(None, group, 3, ct.byref(member), 1) in (0, 1378), "Cannot grant standard Users membership")
         yield name, password, sid
     finally:
         try:

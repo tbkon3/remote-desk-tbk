@@ -226,7 +226,7 @@ class Instance:
             raise RuntimeError("Il profilo è già in uso")
         self.sock = self.stack.enter_context(_listener(port))
         self.port = self.sock.getsockname()[1]
-        if self.profile == self.legacy and not self.override:
+        if _canonical(self.profile) == _canonical(self.legacy):
             write_private(self.base / "legacy.json", json.dumps({"data": _canonical(self.profile)}))
 
     def ready(self):
@@ -246,9 +246,12 @@ class Instance:
             raise ValueError("Porta dell'istanza non valida")
         return port
 
+    def withdraw(self):
+        if self.owner:
+            self.state_path.unlink(missing_ok=True)
+
     def __exit__(self, *exc):
         try:
-            if self.owner:
-                self.state_path.unlink(missing_ok=True)
+            self.withdraw()
         finally:
             self.stack.close()

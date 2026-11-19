@@ -102,6 +102,15 @@ class PortableIdentity(unittest.TestCase):
         with self.assertRaises(PermissionError):
             portable.installed_profile(self.legacy)
 
+    def test_updater_explicit_legacy_profile_is_reused_by_the_next_normal_launch(self):
+        self.legacy.mkdir(parents=True)
+        (self.legacy / "config.json").write_text('{"id":"123456789"}')
+        (self.legacy / "machine.key").write_bytes(base64.b64encode(bytes(32)))
+        with portable.Instance(self.root, self.legacy) as first:
+            first.reserve(None)
+        with portable.Instance(self.root) as next_boot:
+            self.assertEqual(next_boot.profile, self.legacy)
+
     def test_new_profile_auto_updates_existing_opt_out_survives(self):
         self.default.mkdir(parents=True)
         fresh = remotedesk.load_config(str(self.default), True)

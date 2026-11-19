@@ -69,6 +69,18 @@ class PortableUpdateTests(unittest.TestCase):
         self.assertEqual(self.note.read_text(), "keep")
         self.assertEqual(next(self.meta.glob("*/rejected/RemoteDesk.exe")).read_text(), "new")
 
+    def test_identical_launcher_keeps_file_id_and_recovery_uses_staging(self):
+        binary = self.target / "RemoteDesk.exe"
+        before = binary.stat().st_ino
+        (self.source / "RemoteDesk.exe").write_bytes(binary.read_bytes())
+        self.assertEqual(self.launch(True), (0, 1))
+        self.assertEqual(binary.stat().st_ino, before)
+        recovery, = self.meta.glob("*/RECUPERO.json")
+        instructions = json.loads(recovery.read_bytes())
+        self.assertEqual(Path(instructions["executable"]), self.source / "runtime/python.exe")
+        self.assertIn("--recover", instructions["arguments"])
+        self.assertFalse((recovery.parent / "previous/RemoteDesk.exe").exists())
+
     def interrupted(self):
         job = self.meta / ("1" * 32)
         for name in ["previous", "candidate", "rejected"]:

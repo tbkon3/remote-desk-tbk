@@ -136,16 +136,23 @@ def portable_layout(target, data, install, machine_data, *, executable=None):
 
 def _metadata(target):
     meta = target / PORTABLE_META
-    created = False
-    try:
-        meta.mkdir()
-        created = True
-    except FileExistsError:
-        if _item_id(meta, folder=True) is None:
-            raise
+    created = _item_id(meta, folder=True) is None
+    if os.name == "nt":
+        if __package__:
+            from .portable_storage import private_dir
+        else:
+            # The standalone helper was started from the verified staged app.
+            sys.path.insert(0, str(Path(__file__).parents[1]))
+            try:
+                from rd.portable_storage import private_dir
+            finally:
+                sys.path.pop(0)
+        private_dir(meta)
+    else:
+        meta.mkdir(mode=0o700, exist_ok=True)
     with portable_anchor(meta) as pinned:
         marker = pinned / "format"
-        if created:
+        if created and not any(pinned.iterdir()):
             with marker.open("xb") as file:
                 file.write(b"RDUP1")
         elif _item_id(marker, folder=False) is None:
@@ -795,6 +802,9 @@ def _portable_helper(source_path, target_path):
                 raise PermissionError("Destinazione amministrata non ammessa in modalità portabile")
         args = _portable_args(ARGS.args, data)
         with portable_anchor(_metadata(target)) as meta, _local_lock(meta / "lock"), _local_lock(data / ".portable-update.lock"):
+            state = _read_transaction(meta)
+            if state and not getattr(ARGS, "recover", False) and not _transaction_complete(target, state, data):
+                raise RuntimeError(f"Chiudere la copia e usare il comando di {meta / state['id'] / 'RECUPERO.json'}")
             _recover_portable(target, meta, data)
             portable_layout(target, data, INSTALL_DIR, PROGRAM_DATA)
             if getattr(ARGS, "recover", False):
@@ -815,6 +825,8 @@ def main():
     target = os.path.abspath(ARGS.target)
     if ARGS.mode == "user":
         return _portable_helper(ARGS.source, target)
+    if getattr(ARGS, "recover", False):
+        raise ValueError("Il recupero portabile non può agire su un servizio")
     source_path, target_path = plain_path(ARGS.source), plain_path(target)
     if (source_path.is_relative_to(target_path) or target_path.is_relative_to(source_path)
             or target_path.parent == target_path
