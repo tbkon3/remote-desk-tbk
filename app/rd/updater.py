@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,19 @@ def stage_root(data_dir, service):
     return os.path.join(os.path.dirname(data_dir), "release-staging") if service else os.path.join(data_dir, "update")
 
 
+def _redirected(info):
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+def plain_path(value):
+    """Normalizza anche gli alias 8.3, solo dopo aver escluso reparse su ogni componente."""
+    path = Path(os.path.abspath(value))
+    for part in (*reversed(path.parents), path):
+        if _redirected(part.lstat()):
+            raise PermissionError("Percorso reindirizzato non consentito")
+    return path.resolve(strict=True)
+
+
 def _read_receipt(path):
     try:
         with open(path, "rb") as f:
@@ -100,17 +114,26 @@ def _write_receipt(path, obj):
 
 
 def mark_stage_finished(source, base):
-    staged = Path(source).resolve()
+    staged = plain_path(source)
     job = staged.parent.parent
-    if (job.parent == Path(base).resolve() and job.name.startswith("release-")
+    if (job.parent == plain_path(base) and job.name.startswith("release-")
             and staged == job / "nuovo" / "RemoteDesk"):
         _write_receipt(job / ".finished", {"version": 1})
 
 
 def clear_finished_stages(base):
-    for job in Path(base).glob("release-*"):
-        if (job.parent == Path(base) and job.is_dir() and job.resolve() == job.absolute()
-                and _read_receipt(job / ".finished") == {"version": 1}):
+    base = plain_path(base)
+    for job in base.glob("release-*"):
+        try:
+            job_info = job.lstat()
+            if _redirected(job_info) or not stat.S_ISDIR(job_info.st_mode):
+                continue
+            marker = job / ".finished"
+            marker_info = marker.lstat()
+        except FileNotFoundError:
+            continue
+        if (not _redirected(marker_info) and stat.S_ISREG(marker_info.st_mode)
+                and _read_receipt(marker) == {"version": 1}):
             shutil.rmtree(job, ignore_errors=True)
 
 
@@ -231,14 +254,14 @@ def installation_lock(target):
 
 def main():
     target = os.path.abspath(ARGS.target)
-    source_path, target_path = Path(ARGS.source).resolve(), Path(target).resolve()
+    source_path, target_path = plain_path(ARGS.source), plain_path(target)
     if (source_path.is_relative_to(target_path) or target_path.is_relative_to(source_path)
-            or target_path.parent == target_path or target_path != Path(target)
+            or target_path.parent == target_path
             or not (target_path / "app" / "remotedesk.py").is_file()
             or not (source_path / "RemoteDesk.exe").is_file()):
         raise ValueError("percorsi dell'aggiornamento non validi")
-    with installation_lock(target):
-        return update_locked(target)
+    with installation_lock(target_path):
+        return update_locked(os.fspath(target_path))
 
 
 def update_locked(target):

@@ -116,6 +116,7 @@ class FileServer:
                 with W.as_session_user(sid) as user:
                     if self.logon != (sid, logon_id(user.tok)):
                         raise PermissionError("Utente Windows cambiato")
+                    self.scope.bind_windows()
                     if upload:
                         owner = CleanupIdentity(user.tok)
                         try:
@@ -126,6 +127,8 @@ class FileServer:
                             owner.close()
                             raise
                     return fn(*args)
+            if WIN:
+                self.scope.bind_windows()
             return fn(*args)
         pending = asyncio.get_running_loop().run_in_executor(None, run)
         try:
@@ -432,7 +435,7 @@ class FileServer:
         stack = contextlib.ExitStack()
         try:
             folder = stack.enter_context(self.scope.directory(target.parent, before_create=authorize))
-            if shutil.disk_usage(folder.path).free < size + MIN_FREE:
+            if shutil.disk_usage(folder.disk_path).free < size + MIN_FREE:
                 raise OSError("Spazio insufficiente per il trasferimento")
             if overwrite:
                 try:
@@ -454,6 +457,7 @@ class FileServer:
             raise
 
     def _open_download(self, path):
+        path = self.scope.check(path)
         with self.scope.directory(path if path == self.root else path.parent) as parent:
             is_dir = path == self.root or stat.S_ISDIR(parent.stat(path.name).st_mode)
             if not is_dir:
@@ -468,7 +472,7 @@ class FileServer:
                     tmp.close()
                     raise
             else:
-                tmp = tempfile.TemporaryFile(dir=self.root, prefix=TEMP_PREFIX)
+                tmp = tempfile.TemporaryFile(dir=shared.disk_path, prefix=TEMP_PREFIX)
             try:
                 self._archive(path, tmp)
                 tmp.seek(0)
@@ -503,7 +507,7 @@ class FileServer:
                             continue
                         if total + st.st_size > MAX_FILE or output.tell() + st.st_size > MAX_FILE:
                             raise ValueError("Archivio troppo grande")
-                        if shutil.disk_usage(self.root).free < st.st_size + MIN_FREE:
+                        if shutil.disk_usage(folder.disk_path).free < st.st_size + MIN_FREE:
                             raise OSError("Spazio insufficiente per l'archivio")
                         with folder.reader(entry.name) as src, archive.open(name, "w") as dest:
                             while chunk := src.read(64 * 1024):
@@ -609,7 +613,7 @@ class Upload:
 
     def write(self, data, require):
         if self.got // HIGH_WATER != (self.got + len(data)) // HIGH_WATER:
-            if shutil.disk_usage(self.folder.path).free < len(data) + MIN_FREE:
+            if shutil.disk_usage(self.folder.disk_path).free < len(data) + MIN_FREE:
                 raise OSError("Spazio insufficiente per il trasferimento")
         require(self)
         if self.file.write(data) != len(data):

@@ -88,6 +88,20 @@ class PackageTests(unittest.TestCase):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_reparse_ancestor_is_rejected_before_resolution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp) / "release-example"
+            base.mkdir()
+            original = Path.lstat
+            def attributes(path):
+                if path == base:
+                    return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+                return original(path)
+            with (patch.object(Path, "lstat", attributes), patch.object(Path, "resolve") as resolve,
+                  self.assertRaises(PermissionError)):
+                installer.plain_path(base / "untouched")
+            resolve.assert_not_called()
+
     def test_cleanup_only_finished_owned_stage(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)

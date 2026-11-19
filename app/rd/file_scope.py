@@ -55,9 +55,10 @@ if WINDOWS:
                                                    wintypes.LPVOID, wintypes.DWORD]
     _k32.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR,
                                                 wintypes.DWORD, wintypes.DWORD]
+    _k32.GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
     _k32.GetDriveTypeW.argtypes = [wintypes.LPCWSTR]
 
-    def windows_handle(path, *, directory):
+    def windows_handle(path, *, directory, host_alias=False):
         # Pin directories against renaming and reparse-point writes during the operation.
         access = 0x80000000 if directory is False else 0x80  # GENERIC_READ / FILE_READ_ATTRIBUTES
         flags = 0x00200000 | (0x02000000 if directory is not False else 0)  # OPEN_REPARSE_POINT / BACKUP_SEMANTICS
@@ -74,14 +75,50 @@ if WINDOWS:
             count = _k32.GetFinalPathNameByHandleW(h, buf, len(buf), 0)
             if not 0 < count < len(buf):
                 raise PermissionError(DENIED)
-            actual = buf.value.removeprefix("\\\\?\\")
-            if os.path.normcase(actual) != os.path.normcase(path):
-                # Also rejects DOS aliases for an otherwise protected directory.
+            actual = Path(buf.value.removeprefix("\\\\?\\"))
+            requested = Path(path)
+            if (not actual.is_absolute() or actual.drive.upper() != requested.drive.upper()
+                    or actual.parent != requested.parent):
                 raise PermissionError(DENIED)
-            return h
+            if actual != requested:
+                # The final object and all its parents are already pinned and
+                # verified non-reparse. Only accept its genuine DOS alternate name.
+                if not host_alias:
+                    raise PermissionError(DENIED)
+                count = _k32.GetShortPathNameW(str(actual), buf, len(buf))
+                if not 0 < count < len(buf) or Path(buf.value).name.lower() != requested.name.lower():
+                    raise PermissionError(DENIED)
+            return h, actual
         except BaseException:
             _k32.CloseHandle(h)
             raise
+
+    def trusted_directory(path, *, protected=False):
+        """Expand host-selected 8.3 components only after pinning their verified parents."""
+        if not path.is_absolute() or len(path.drive) != 2 or _k32.GetDriveTypeW(path.anchor) not in (2, 3, 6):
+            raise PermissionError(DENIED)
+        with contextlib.ExitStack() as stack:
+            current = Path(path.anchor)
+            for index, part in enumerate((None, *path.parts[1:])):
+                target = current if part is None else current / component(part)
+                try:
+                    handle, actual = windows_handle(str(target), directory=True, host_alias=True)
+                except FileNotFoundError:
+                    if not protected:
+                        raise
+                    # No corresponding short name exists for a missing directory.
+                    # Reserve its lexical tail, or the parent for a possible future alias.
+                    tail = path.parts[index:]
+                    return current if any("~" in name for name in tail) else current.joinpath(*tail)
+                except OSError:
+                    if not protected:
+                        raise
+                    # An unreadable protected directory cannot be safely normalized.
+                    # Reserve the nearest verified ancestor rather than dropping the exclusion.
+                    return current
+                stack.callback(_k32.CloseHandle, handle)
+                current = actual
+            return current
 
 
 class Scope:
@@ -90,9 +127,28 @@ class Scope:
             raise ValueError("Configurare una cartella di scambio locale assoluta")
         self.root = Path(os.path.abspath(root))
         self.protected = [Path(os.path.abspath(p)) for p in protected if p]
+        self.disk_root = None
         if (self.root == self.root.parent or str(self.root).startswith(("\\\\", "//"))
                 or any(inside(self.root, p) for p in self.protected)):
             raise PermissionError(DENIED)
+
+    def bind_windows(self):
+        # Called in the file worker under the authenticated interactive user.
+        # Keep the configured spelling on the wire and a verified long path for OS calls.
+        if self.disk_root is not None:
+            return
+        physical = trusted_directory(self.root)
+        exclusions = list(self.protected)
+        for path in self.protected:
+            if path.drive.lower() != physical.drive.lower():
+                continue
+            protected = trusted_directory(path, protected=True)
+            if inside(physical, protected):
+                raise PermissionError(DENIED)
+            if inside(protected, physical):
+                exclusions.append(self.root / protected.relative_to(physical))
+        self.protected = exclusions
+        self.disk_root = physical
 
     def check(self, candidate, *, mutating=False):
         if not isinstance(candidate, (str, Path)):
@@ -114,25 +170,29 @@ class Scope:
 
     @contextlib.contextmanager
     def directory(self, path, *, before_create=None):
+        if WINDOWS:
+            self.bind_windows()
         path = self.check(path)
-        if WINDOWS and _k32.GetDriveTypeW(self.root.anchor) not in (2, 3, 6):
+        disk_root = self.disk_root if WINDOWS else self.root
+        disk_path = disk_root / path.relative_to(self.root)
+        if WINDOWS and _k32.GetDriveTypeW(disk_root.anchor) not in (2, 3, 6):
             raise PermissionError(DENIED)
         with contextlib.ExitStack() as stack:
-            current = Path(path.anchor)
+            current = Path(disk_path.anchor)
             fd = None
             root_device = None
-            for index, part in enumerate((None, *path.parts[1:])):
+            for index, part in enumerate((None, *disk_path.parts[1:])):
                 if index:
                     component(part)
                     current = current / part
                 try:
                     if WINDOWS:
-                        handle = windows_handle(str(current), directory=True)
+                        handle, _ = windows_handle(str(current), directory=True)
                     else:
                         root_or_part = part if index else str(current)
                         child = os.open(root_or_part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                 except FileNotFoundError:
-                    if before_create is None or not inside(current, self.root) or current == self.root:
+                    if before_create is None or not inside(current, disk_root) or current == disk_root:
                         raise
                     before_create()
                     if WINDOWS:
@@ -140,7 +200,7 @@ class Scope:
                             os.mkdir(current)
                         except FileExistsError:
                             pass
-                        handle = windows_handle(str(current), directory=True)
+                        handle, _ = windows_handle(str(current), directory=True)
                     else:
                         try:
                             os.mkdir(part, mode=0o700, dir_fd=fd)
@@ -156,23 +216,23 @@ class Scope:
                         root_device = os.fstat(fd).st_dev
                     elif root_device is not None and os.fstat(fd).st_dev != root_device:
                         raise PermissionError(DENIED)
-            yield Directory(self, path, fd)
+            yield Directory(self, path, disk_path, fd)
 
 
 class Directory:
-    def __init__(self, scope, path, fd):
-        self.scope, self.path, self.fd = scope, path, fd
+    def __init__(self, scope, path, disk_path, fd):
+        self.scope, self.path, self.disk_path, self.fd = scope, path, disk_path, fd
 
     def arg(self, name):
-        return self.path / name if WINDOWS else name
+        return self.disk_path / name if WINDOWS else name
 
     def stat(self, name, *, internal=False):
         component(name, internal=internal)
         if WINDOWS:
             # Inspect the reparse tag before resolving aliases. Resolving a junction
             # first could contact an unshared UNC target even during a listing.
-            path = str(self.path / name)
-            handle = windows_handle(path, directory=None)
+            path = str(self.disk_path / name)
+            handle, _ = windows_handle(path, directory=None)
             try:
                 st = os.stat(path, follow_symlinks=False)
             finally:
@@ -185,12 +245,12 @@ class Directory:
         return st
 
     def scan(self):
-        return os.scandir(self.path if WINDOWS else self.fd)
+        return os.scandir(self.disk_path if WINDOWS else self.fd)
 
     def reader(self, name):
         self.scope.check(self.path / component(name))
         if WINDOWS:
-            handle = windows_handle(str(self.path / name), directory=False)
+            handle, _ = windows_handle(str(self.disk_path / name), directory=False)
             try:
                 fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
             except BaseException:

@@ -88,6 +88,53 @@ class FileSecurity(unittest.IsolatedAsyncioTestCase):
             self.message(op, rid, path=str(path))
             await self.result(rid, "err")
 
+    @unittest.skipUnless(os.name == "nt", "Windows short names")
+    async def test_host_short_root_and_peer_aliases(self):
+        import ctypes
+        from ctypes import wintypes
+
+        get_short = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        get_short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        def short_name(path):
+            buf = ctypes.create_unicode_buffer(32768)
+            length = get_short(str(path), buf, len(buf))
+            self.assertTrue(0 < length < len(buf))
+            alias = Path(buf.value)
+            if alias.name.casefold() == path.name.casefold():
+                self.skipTest("Il volume non genera nomi brevi 8.3")
+            return alias
+
+        root = self.home / "Long shared folder for the agent"
+        root.mkdir()
+        private = root / "Long private application data"
+        private.mkdir()
+        (private / "secret").write_bytes(b"private")
+        normal = root / "Normal long document.txt"
+        normal.write_bytes(b"public")
+        alias, private_alias, normal_alias = map(short_name, (root, private, normal))
+        self.agent.cfg["incoming_dir"] = str(alias)
+        self.agent.data_dir = private
+        self.dc = Channel()
+        self.server = files.FileServer(self.agent, self.session, self.dc)
+        self.message("roots")
+        self.assertEqual((await self.result(1, "roots"))["incoming"], str(alias))
+        self.message("ls", 2, path=str(alias))
+        self.assertEqual([e["n"] for e in (await self.result(2, "ls"))["entries"]], [normal.name])
+        self.message("get", 3, path=str(alias / normal.name))
+        await self.result(3, "end")
+        self.message("get", 4, path=str(alias / private_alias.name / "secret"))
+        await self.result(4, "err")
+        self.message("get", 5, path=str(alias / normal_alias.name))
+        await self.result(5, "err")
+        self.message("put", 6, path=str(alias), name="fresh", size=0)
+        self.message("end", 6)
+        await self.result(6, "done")
+        self.assertTrue((root / "fresh").is_file())
+        forbidden = Scope(private_alias, [private])
+        with self.assertRaises(PermissionError):
+            with forbidden.directory(private_alias):
+                self.fail("Protected root was available using its DOS alias")
+
     def test_paths_and_reserved_names(self):
         for invalid in ["a:b", "NUL.txt", "Lpt1", "nested\\name", "..", "s.", ".rd-transfer-test", "\0"]:
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
@@ -302,6 +349,10 @@ class FileSecurity(unittest.IsolatedAsyncioTestCase):
             os.link(outside, self.root / "hard")
         except PermissionError as exc:
             self.skipTest(str(exc))
+        normal = self.root / "normal.txt"
+        normal.write_bytes(b"public")
+        self.message("get", 10, path=str(normal))
+        await self.result(10, "end")
         self.message("get", path=str(self.root / "hard"))
         await self.result(1, "err")
 
@@ -320,6 +371,10 @@ class FileSecurity(unittest.IsolatedAsyncioTestCase):
             os.symlink(outside, self.root / "link")
         except OSError as exc:
             self.skipTest(str(exc))
+        normal = self.root / "normal.txt"
+        normal.write_bytes(b"public")
+        self.message("get", 10, path=str(normal))
+        await self.result(10, "end")
         self.message("get", 3, path=str(self.root / "link"))
         await self.result(3, "err")
 

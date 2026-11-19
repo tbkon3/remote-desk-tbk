@@ -26,7 +26,7 @@ from aiohttp import ClientSession, ClientTimeout
 from . import auth
 from .common import DEFAULT_PORT, INSTALL_DIR, PROGRAM_DATA, ROOT_DIR, VERSION, WIN, secure_dir
 from .release_package import MAX_PACKAGE, extract_package, https_url, validate_manifest, version_tuple
-from .updater import acknowledge_start, clear_finished_stages, stage_root, system_tool
+from .updater import acknowledge_start, clear_finished_stages, plain_path, stage_root, system_tool
 
 log = logging.getLogger("rd.update")
 
@@ -170,8 +170,7 @@ class Updater:
                 stage_dir = candidate
             else:
                 os.makedirs(base, exist_ok=True)
-            if os.path.normcase(os.path.realpath(base)) != os.path.normcase(os.path.abspath(base)):
-                raise RuntimeError("cartella di aggiornamento reindirizzata")
+            base = os.fspath(plain_path(base))
             clear_finished_stages(base)
             if stage_dir is None:
                 stage_dir = tempfile.mkdtemp(prefix="release-", dir=base)

@@ -21,6 +21,8 @@ Per gli stati di sicurezza e i prerequisiti di migrazione consulta [SECURITY.md]
 
 Da un ambiente di sviluppo con Python 3.12, le dipendenze di `requirements.txt` e Node, esegui `python -m unittest discover -s tests` e `node --test tests/*.cjs`. La suite usa identità effimere, file sintetici e inventario simulato. Comprende un test TCP su loopback e test Win32 che dipendono dai permessi del runner. Il collaudo WAN con TURN reale richiede due accessi di rete e credenziali di test.
 
+Il workflow di regressione include anche una prova Linux con un server coturn temporaneo, TLS e due peer su una rete isolata. Il traffico di questo test rimane sul runner. Il collaudo tra sedi verifica in più DNS, certificati, firewall e raggiungibilità dell'infrastruttura destinata alla produzione.
+
 ---
 
 ## Manuale della distribuzione precedente (2.3.2)
@@ -185,6 +187,18 @@ conservala in un posto sicuro. Se la perdi, per cambiarla serve una versione con
 mano una volta su ogni PC.
 
 ---
+
+## Collaudo automatico del relay TURN/TLS
+
+Il job Linux `turn-tls-loopback` prepara un server coturn temporaneo su `127.0.0.1`, una CA di prova e due peer WebRTC. Entrambi devono negoziare candidati relay distinti e scambiare dati in entrambe le direzioni sul canale DTLS/SCTP. Il test ripete il collegamento dopo aver verificato il rifiuto di credenziali errate e di un certificato emesso da una CA estranea.
+
+Per ripeterlo su un runner Linux dedicato servono `coturn`, `openssl`, `iproute2`, `util-linux`, `coreutils` e il Python dell'applicativo con `aiortc` installato. Dalla radice della repository esegui il comando seguente.
+
+```bash
+sudo unshare --net -- bash tests/run_turn_tls_smoke.sh "$(command -v python)"
+```
+
+Il test usa solo il loopback del namespace e rimuove server, credenziali e certificati al termine. Per verificare il collegamento Internet di una specifica installazione occorre una prova separata fra due PC autorizzati sulle reti interessate.
 
 ## Connessione: segnalazione, firewall e TURN
 

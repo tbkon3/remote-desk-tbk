@@ -13,7 +13,7 @@ import time
 from xml.sax.saxutils import escape
 
 from .common import APP_DIR, INSTALL_DIR, PROGRAM_DATA, ROOT_DIR, WINDOWS_ANCESTOR_POLICY, secure_dir
-from .updater import system_tool
+from .updater import plain_path, system_tool
 
 log = logging.getLogger("rd.service")
 TASK = "RemoteDesk"
@@ -59,7 +59,7 @@ def installed_paths():
 def _verify_installation():
     """La registrazione SYSTEM accetta solo un albero predisposto da un amministratore."""
     for path in installed_paths():
-        if not os.path.isfile(path) or os.path.normcase(os.path.realpath(path)) != os.path.normcase(os.path.abspath(path)):
+        if not plain_path(path).is_file():
             raise RuntimeError("Predisporre la release verificata in " + INSTALL_DIR)
     # Il proprietario puo' cambiare la DACL. Considerare anche i permessi che
     # erediterebbero i nuovi oggetti creati a esecuzione iniziata.
@@ -151,7 +151,7 @@ def install(user_data=None):
     from . import winapi as W
     import winreg
     try:
-        if os.path.normcase(os.path.realpath(ROOT_DIR)) != os.path.normcase(INSTALL_DIR):
+        if plain_path(ROOT_DIR) != plain_path(INSTALL_DIR):
             raise RuntimeError("Avviare la copia amministrata in " + INSTALL_DIR)
         _verify_installation()
         secure_dir(PROGRAM_DATA)
@@ -195,8 +195,7 @@ def run_supervisor():
     from . import winapi as W
     child, child_sess, failures = None, None, 0
     pyw, entry, _ = installed_paths()
-    if (os.path.normcase(os.path.realpath(ROOT_DIR)) != os.path.normcase(INSTALL_DIR)
-            or os.path.normcase(os.path.realpath(sys.executable)) != os.path.normcase(pyw)):
+    if plain_path(ROOT_DIR) != plain_path(INSTALL_DIR) or plain_path(sys.executable) != plain_path(pyw):
         raise PermissionError("Il supervisore richiede la copia protetta del servizio")
     _verify_installation()
     log.info("supervisore avviato (pid %s)", os.getpid())

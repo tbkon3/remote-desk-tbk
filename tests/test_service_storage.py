@@ -95,6 +95,9 @@ exit 0
               patch.object(service.sys, "executable", str(Path(tmp) / "runtime" / "pythonw.exe")),
               patch.object(service, "_verify_installation", side_effect=PermissionError("DACL")) as verify,
               patch.object(service, "secure_dir") as data):
+            for path in service.installed_paths():
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).touch()
             with self.assertRaises(PermissionError):
                 service.run_supervisor()
             verify.assert_called_once()
