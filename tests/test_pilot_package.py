@@ -69,7 +69,8 @@ class PilotPackage(unittest.TestCase):
             secret = Ed25519PrivateKey.generate()
             pub = base64.b64encode(secret.public_key().public_bytes(
                 serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode("ascii")
-            write("app/rd/update.py", f'RELEASE_PUB = "{pub}"\n'.encode())
+            update = f'RELEASE_PUB = "{pub}"\nDEFAULT_URL = "{pack.FEED}latest.json"\n'.encode()
+            write("app/rd/update.py", update)
             write("app/remotedesk.py", b"# entry point\n")
             write("app/rd/updater.py", b"# updater\n")
             write("app/rd/common.py", b'VERSION = "2.3.2"\n')
@@ -117,6 +118,34 @@ class PilotPackage(unittest.TestCase):
                     pack.build(repo, head, a, now, now + 3600)
                 with self.assertRaises(ValueError):
                     pack.build(repo, head, Path(work) / "expired", now - 60, now - 1)
+                pilot_name = "RemoteDesk-2.4.1.zip"
+                pilot = Path(work) / "portable-pilot"
+                with self.assertRaisesRegex(ValueError, "Versione applicativa"):
+                    pack.build(repo, head, pilot, now, now + 86400, "2.4.1")
+                (repo / "app/local-private.key").unlink()
+                write("app/rd/common.py", b'VERSION = "2.4.1"\n')
+                pilot_ref = commit("portable 2.4.1")
+                pilot_body = pack.build(repo, pilot_ref, pilot, now, now + 86400, "2.4.1")
+                self.assertEqual(pilot_body["version"], "2.4.1")
+                self.assertEqual(pilot_body["file"], pilot_name)
+                self.assertEqual(pilot_body["url"], pack.FEED + pilot_name)
+                self.assertNotIn("sig", pilot_body)
+                self.assertEqual(set(p.name for p in pilot.iterdir()), {pilot_name, "latest.unsigned.json", "SHA256SUMS"})
+                self.assertEqual(hashlib.sha256((pilot / pilot_name).read_bytes()).hexdigest(), pilot_body["sha256"])
+                self.assertEqual(json.loads((pilot / "latest.unsigned.json").read_bytes()), pilot_body)
+                with zipfile.ZipFile(pilot / pilot_name) as new, zipfile.ZipFile(archive) as old:
+                    for name in old.namelist():
+                        if name.endswith("RemoteDesk.exe") or name.startswith("RemoteDesk/runtime/"):
+                            self.assertEqual(new.read(name), old.read(name))
+                    self.assertEqual(new.read("RemoteDesk/app/rd/common.py"), b'VERSION = "2.4.1"\n')
+                self.assertEqual((a / pack.FILE).read_bytes(), (b / pack.FILE).read_bytes())
+                with self.assertRaisesRegex(ValueError, "Versione di destinazione"):
+                    pack.source_files(repo, pilot_ref, "../../latest.json")
+                write("app/rd/update.py", update.replace(pack.FEED.encode(), b"https://invalid.test/"))
+                wrong_feed = commit("incorrect default feed")
+                with self.assertRaisesRegex(ValueError, "feed predefinito"):
+                    pack.build(repo, wrong_feed, Path(work) / "wrong-feed", now, now + 86400, "2.4.1")
+                write("app/rd/update.py", update)
                 tampered = dict(body, size=1)
                 with self.assertRaises(InvalidSignature):
                     pack.verify_baseline(json.dumps(tampered), archive)
@@ -124,13 +153,14 @@ class PilotPackage(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     pack.verify_baseline(json.dumps(body), archive)
                 # Newly tracked secrets and changed runtime inputs must fail closed.
+                write("app/local-private.key", b"tracked")
                 bad = commit("bad inputs")
                 with self.assertRaisesRegex(ValueError, "File imprevisto"):
-                    pack.source_files(repo, bad)
+                    pack.source_files(repo, bad, "2.4.1")
                 write("build/launcher.c", b"changed")
                 changed = commit("launcher changed")
                 with self.assertRaisesRegex(ValueError, "Prerequisito"):
-                    pack.source_files(repo, changed)
+                    pack.source_files(repo, changed, "2.4.1")
 
 
 if __name__ == "__main__":

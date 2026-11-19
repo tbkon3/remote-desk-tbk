@@ -76,6 +76,7 @@ table.t select{padding:3px 6px;font-size:12px}
   <button id="bLogout" class="hide" title="Esci da tutte le reti">Esci</button>
 </header>
 <main><div class="wrap">
+<div id="updBanner" class="alertbox hide" style="max-width:none;background:#e0ecff;color:#1e3a8a;border-color:#93c5fd" role="status"></div>
 
 <!-- ============ primo avvio ============ -->
 <section id="v-welcome" class="hide">
@@ -86,6 +87,13 @@ table.t select{padding:3px 6px;font-size:12px}
     <button data-start="create"><b>Crea una nuova rete</b><span>Crei una rete nuova e il suo utente amministratore. Otterrai la chiave di rete per aggiungere gli altri PC.</span></button>
   </div>
   <div style="text-align:center"><button id="wBack" class="hide">Annulla</button></div>
+  <div id="welcomeUpdates" class="card narrow hide">
+    <h3>Aggiornamenti di questa copia</h3>
+    <p id="welcomeTarget" style="overflow-wrap:anywhere"></p>
+    <p id="welcomeUpdateStatus" class="mut"></p>
+    <label class="chk"><input type="checkbox" id="welcomeAuto"> Installa gli aggiornamenti firmati quando nessuno è collegato</label>
+    <div class="row"><button id="welcomeCheck">Controlla ora</button></div>
+  </div>
 </section>
 
 <!-- ============ crea / entra (anche "aggiungi rete") ============ -->
@@ -125,7 +133,6 @@ table.t select{padding:3px 6px;font-size:12px}
 <section id="v-machines" class="hide">
   <div class="bar"><input id="search" placeholder="Cerca per nome, ID, utente o rete...">
     <button id="bRefresh" title="Chiede a tutte le macchine di ripresentarsi">&#8635; Aggiorna</button></div>
-  <div id="updBanner" class="alertbox hide" style="max-width:none;background:#e0ecff;color:#1e3a8a;border-color:#93c5fd"></div>
   <div id="machList"></div>
 </section>
 
@@ -222,6 +229,7 @@ table.t select{padding:3px 6px;font-size:12px}
     <h3>Aggiornamenti</h3>
     <div class="form">
       <label class="l">Stato</label><div><span id="updTxt" class="mut"></span> <button id="updCheck">Controlla ora</button></div>
+      <label class="l">Copia da aggiornare</label><div id="updateTarget" style="overflow-wrap:anywhere"></div>
       <label class="l">Installazione automatica</label><label class="chk"><input type="checkbox" data-s="auto_update"> installa da solo le nuove versioni quando nessuno e' collegato</label>
       <label class="l">Indirizzo aggiornamenti</label><input data-s="update_url" placeholder="(predefinito: repository ufficiale)">
     </div>
@@ -278,6 +286,7 @@ function openSession(nid, id, name, mode='control'){
 }
 
 function renderHeader(){
+  renderUpdate();
   $('meId').textContent = P.me.fid; $('meName').textContent = P.me.name + ' - ID di questo PC';
   const n = P.networks.length, on = P.networks.filter(x => x.state === 'online').length;
   $('netDot').className = 'dot ' + (!n ? 'bad' : on === n ? 'on' : 'warn');
@@ -343,22 +352,72 @@ function fillNetSelects(){
 // ---------------- macchine (raggruppate per rete)
 const vt = v => String(v || '').split(/\D+/).filter(Boolean).map(Number);
 function vless(a, b){ const x = vt(a), y = vt(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i]||0) !== (y[i]||0)) return (x[i]||0) < (y[i]||0) } return false }
+let localUpdate = null, observation = null, installingRequest = false, updateInterrupted = false;
+const copyNames = {service:'Servizio Windows', portable:'Copia portabile', user:'Copia utente'};
+function targetText(target){
+  return target?.path && Object.hasOwn(copyNames, target.mode) ? copyNames[target.mode] + ' · ' + target.path : '';
+}
+function updateStatusText(u, target){
+  const percent = Math.min(100, Math.max(0, Number(u.progress) || 0));
+  const active = ['downloading','installing'].includes(u.state);
+  const key = active ? JSON.stringify([target?.mode, target?.path, u.latest, u.state, percent]) : null;
+  if (!active) observation = null;
+  else if (observation?.key !== key) observation = {key, time:Date.now()};
+  const age = observation ? Math.floor((Date.now() - observation.time) / 1000) : 0;
+  const stale = age >= 30 ? ' Ultima variazione osservata ' + age + ' s fa.' : '';
+  if (!u.supported) return 'Aggiornamento disponibile solo su Windows.';
+  if (u.state === 'error') return u.error || 'Aggiornamento non riuscito.';
+  if (u.state === 'checking') return 'Controllo della versione disponibile…';
+  if (u.state === 'downloading') return (percent === 100 ? 'Download completato. Preparazione del pacchetto.' : 'Download in corso · ' + percent + '%.') + stale;
+  if (u.state === 'installing') return 'Installazione avviata. Alla riapertura verifica la versione nella console.' + stale;
+  if (u.available) return 'Disponibile RemoteDesk ' + u.latest + ' (installata ' + u.current + ').';
+  return 'Versione installata ' + u.current + (u.last_check ? '. Ultimo controllo ' + new Date(u.last_check * 1000).toLocaleString() + '.' : '.');
+}
+function clearUpdateDetails(){
+  localUpdate = observation = null;
+  $('updBanner').replaceChildren(); $('updBanner').classList.add('hide');
+  $('welcomeUpdates').classList.add('hide');
+  for (const id of ['welcomeTarget','welcomeUpdateStatus','updTxt','updateTarget']) $(id).textContent = '';
+}
 function renderUpdate(){
-  const u = P.update || {}; const box = $('updBanner');
-  if (!S?.can_configure || !u.supported || (!u.available && !['downloading','installing'].includes(u.state))) { box.classList.add('hide'); return }
-  box.classList.remove('hide');
-  if (u.state === 'downloading') box.innerHTML = `Download di RemoteDesk ${esc(u.latest)} in corso... ${u.progress | 0}%`;
-  else if (u.state === 'installing') box.innerHTML = `Installazione di RemoteDesk ${esc(u.latest)}: il programma si riavvia da solo tra pochi secondi.`;
-  else box.innerHTML = `<b>E' disponibile RemoteDesk ${esc(u.latest)}</b> (questo PC ha la ${esc(u.current)}). ${u.notes ? '<br><span style="font-size:13px">' + esc(u.notes) + '</span>' : ''}
-     <div class="row" style="margin-top:8px"><button class="pri" id="updGo">Aggiorna questo PC</button></div>`;
-  const g = $('updGo'); if (g) g.onclick = async () => {
-    if (!confirm(`Installare RemoteDesk ${u.latest}? Il programma si chiude e riparte da solo.`)) return;
-    const r = await post('/api/update/install'); toast(r.error || 'Aggiornamento avviato', 5000); refresh();
-  };
+  const u = localUpdate?.local_update, target = localUpdate?.update_target;
+  const label = targetText(target), box = $('updBanner');
+  if (!u || !label) { clearUpdateDetails(); return }
+  const status = updateStatusText(u, target);
+  $('updateTarget').textContent = label; $('updTxt').textContent = status;
+  const welcome = !P.configured && !formMode && u.supported;
+  $('welcomeUpdates').classList.toggle('hide', !welcome);
+  if (welcome) {
+    $('welcomeTarget').textContent = label; $('welcomeUpdateStatus').textContent = status;
+    $('welcomeAuto').checked = !!u.auto;
+  }
+  const active = ['downloading','installing'].includes(u.state);
+  const visible = (welcome || (P.logged && !formMode && tab === 'machines')) && u.supported && (u.available || active || u.state === 'error');
+  box.classList.toggle('hide', !visible);
+  box.replaceChildren();
+  if (!visible) return;
+  const message = document.createElement('strong'), location = document.createElement('div');
+  message.textContent = status; location.textContent = label; location.style.overflowWrap = 'anywhere';
+  box.append(message, location);
+  if (u.available && !active && u.state !== 'checking') {
+    if (u.notes) { const notes = document.createElement('div'); notes.textContent = u.notes; box.append(notes) }
+    const button = document.createElement('button');
+    button.id = 'updGo'; button.type = 'button'; button.className = 'pri'; button.textContent = 'Aggiorna questo PC';
+    button.disabled = installingRequest;
+    button.onclick = async () => {
+      if (installingRequest || !confirm('Installare RemoteDesk ' + u.latest + ' in questa copia?\n\n' + label)) return;
+      installingRequest = button.disabled = true;
+      try {
+        const r = await post('/api/update/install', {expected_target:target});
+        toast(r.error || 'Richiesta di aggiornamento inviata');
+      } catch { toast('Conferma non ricevuta. Verifica lo stato della copia dalla console.') }
+      finally { installingRequest = false; refresh() }
+    };
+    box.append(button);
+  }
 }
 
 function renderMachines(){
-  renderUpdate();
   const q = $('search').value.trim().toLowerCase();
   let html = '';
   for (const n of P.networks) {
@@ -406,7 +465,7 @@ $('machList').addEventListener('click', async ev => {
   }
   const c = b.closest('.m'); if (!c) return;
   if (b.dataset.upd) {
-    if (!confirm(`Aggiornare RemoteDesk su ${c.dataset.name} alla versione ${P.update.latest}?\n\nLa macchina scarica l'aggiornamento, si riavvia e torna disponibile da sola (circa 1-2 minuti). Le sessioni aperte si ricollegano automaticamente.`)) return;
+    if (!confirm(`Aggiornare RemoteDesk sulla macchina remota ${c.dataset.name} alla versione ${P.update.latest}?\n\nDopo il riavvio verifica la versione nella rubrica e apri una nuova sessione.`)) return;
     const r = await post('/api/machines/update', {nid:c.dataset.nid, id:c.dataset.id});
     toast(r.error || 'Comando inviato: la macchina si sta aggiornando', 6000); return;
   }
@@ -685,18 +744,28 @@ function renderSettings(){
   $('clearTurn').disabled = !S.turn_password_set;
   $('turnSecret').placeholder = S.turn_secret_set ? 'Segreto impostato' : 'Almeno 32 byte';
   $('clearSecret').disabled = !S.turn_secret_set;
-  $('svcTxt').textContent = !P.service.supported ? 'Disponibile solo su Windows.' :
+  const portable = localUpdate?.update_target?.mode === 'portable';
+  $('svcTxt').textContent = portable ? 'Questa copia portabile si avvia dalla propria cartella.' : !P.service.supported ? 'Disponibile solo su Windows.' :
      P.service.installed ? (P.service.active ? 'Installato e attivo.' : 'Installato (in avvio...).') : 'Non installato.';
   $('svcBtn').textContent = P.service.installed ? 'Rimuovi servizio' : 'Installa servizio';
   $('svcBtn').disabled = !P.service.supported;
   $('autostart').checked = S.autostart || P.service.installed;
-  $('autostart').disabled = P.platform !== 'win32' || P.service.installed;
+  $('autostart').disabled = portable || P.platform !== 'win32' || P.service.installed;
   $('ver').textContent = 'RemoteDesk ' + P.version;
-  const u = P.update || {};
-  $('updTxt').textContent = !u.supported ? 'Disponibile solo su Windows.' : u.state === 'error' ? u.error :
-    u.available ? `Disponibile la ${u.latest} (installata ${u.current}).` : u.last_check ? `Versione ${u.current}: aggiornata.` : `Versione ${u.current}.`;
 }
-$('updCheck').onclick = async () => { $('updCheck').disabled = true; await post('/api/update/check'); $('updCheck').disabled = false; refresh() };
+for (const id of ['updCheck','welcomeCheck']) $(id).onclick = async () => {
+  $(id).disabled = true;
+  try { const r = await post('/api/update/check'); if (r.error) toast(r.error) }
+  catch { toast('Controllo interrotto. Verifica lo stato della copia dalla console.') }
+  finally { $(id).disabled = false; refresh() }
+};
+$('welcomeAuto').onchange = async () => {
+  const input = $('welcomeAuto'); input.disabled = true;
+  try {
+    const r = await post('/api/settings', {auto_update:input.checked}); toast(r.error || 'Impostazione salvata per questa copia');
+  } catch { toast('Impostazione non confermata. Verifica di nuovo dalla console.') }
+  finally { input.disabled = false; refresh() }
+};
 document.querySelectorAll('[data-s]').forEach(el => el.addEventListener('change', async () => {
   const key = el.dataset.s, secret = key === 'turn_secret' || key === 'turn_pass';
   if (secret && !el.value) return;
@@ -728,10 +797,21 @@ document.addEventListener('click', async ev => {
 });
 $('closeAll').onclick = async () => { await post('/api/sessions/close', {}); refresh() };
 
+let refreshRunning = false, refreshQueued = false;
 async function refresh(){
+  if (refreshRunning) { refreshQueued = true; return }
+  refreshRunning = true;
+  const controller = new AbortController(), deadline = setTimeout(() => controller.abort(), 9000);
+  const read = async path => {
+    const response = await fetch(path, {signal:controller.signal});
+    if (!response.ok) throw Error(String(response.status));
+    return response.json();
+  };
   try {
-    P = await (await fetch('/api/public')).json();
-    if (P.logged) { const r = await fetch('/api/state'); S = r.ok ? await r.json() : null } else S = null;
+    const pub = await read('/api/public');
+    const state = pub.logged ? await read('/api/state') : null;
+    const updates = state?.can_configure ? state : !pub.configured && pub.can_add_network ? await read('/api/update/local') : null;
+    P = pub; S = state; localUpdate = updates; updateInterrupted = false;
     if ($('keyDialog').open && !S?.admin_nets?.[$('keyDialog').dataset.nid]) $('keyDialog').close();
     if (view === 'welcome-add' && !formMode) { renderHeader(); $('nav').classList.add('hide'); return }
     if (showingKey) { renderHeader(); return }
@@ -740,7 +820,18 @@ async function refresh(){
     const ae = document.activeElement;
     if (tab === 'machines' && ae && $('machList').contains(ae) && ae.matches('.iu,.ip')) { renderHeader(); return }
     render();
-  } catch(e){ $('netTxt').textContent = 'RemoteDesk non e\' in esecuzione'; $('netDot').className = 'dot bad' }
+  } catch(e){
+    updateInterrupted = updateInterrupted || !!observation || installingRequest;
+    clearUpdateDetails();
+    if (updateInterrupted) {
+      $('updBanner').textContent = 'Contatto con la copia interrotto. Riapri la console dalla sua icona per verificare la versione installata.';
+      $('updBanner').classList.remove('hide');
+    }
+    $('netTxt').textContent = 'Console locale non raggiungibile. Aprila dall’icona di RemoteDesk.'; $('netDot').className = 'dot bad';
+  } finally {
+    clearTimeout(deadline); refreshRunning = false;
+    if (refreshQueued) { refreshQueued = false; queueMicrotask(refresh) }
+  }
 }
 setInterval(refresh, 2500); refresh();
 </script>

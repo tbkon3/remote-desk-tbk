@@ -16,7 +16,7 @@ from aiohttp import web
 from . import auth
 from . import service as svc
 from .agent import service_marker
-from .common import VERSION, WEB_DIR, WIN, fmt_id, os_label, service_installed
+from .common import INSTALL_DIR, ROOT_DIR, VERSION, WEB_DIR, WIN, fmt_id, os_label, service_installed
 
 if WIN:
     from . import winapi as W
@@ -128,9 +128,24 @@ def make_app(agent, port, on_quit):
             return web.FileResponse(os.path.join(WEB_DIR, name))
         return h
 
+    def update_target():
+        # Stessa scelta di Updater._install: conta il processo che risponde alla console.
+        if agent.service_mode:
+            return {"mode": "service", "path": INSTALL_DIR}
+        return {"mode": "portable" if getattr(agent, "portable", False) else "user", "path": ROOT_DIR}
+
+    def local_update_status():
+        return {"update_target": update_target(), "local_update": agent.updater.status()}
+
+    async def update_local(req):
+        need_local_admin(req)
+        return web.json_response(local_update_status())
+
     # ------------------------------------------------------------------ pubblico
     async def public(req):
         lgs = login_of(req)
+        portable = getattr(agent, "portable", False)
+        update = agent.updater.status()
         nets = []
         for n in agent.nets.values():
             lg = lgs.get(n.nid)
@@ -153,10 +168,10 @@ def make_app(agent, port, on_quit):
                           "net": s.net.name, "since": int(s.started), "connected": s.connected}
                          for s in agent.sessions.values()],
             "events": agent.events[-30:],
-            "service": {"installed": service_installed(agent.data_dir),
-                        "active": agent.service_mode, "supported": WIN},
+            "service": {"installed": not portable and service_installed(agent.data_dir),
+                        "active": not portable and agent.service_mode, "supported": WIN and not portable},
             "platform": sys.platform,
-            "update": agent.updater.status(),
+            "update": {key: update.get(key) for key in ("current", "latest", "available", "supported")},
         })
 
     async def ping(_):
@@ -270,11 +285,12 @@ def make_app(agent, port, on_quit):
             "machines": machines,
             "admin_nets": admin_nets,
             "can_configure": can_configure,
+            **(local_update_status() if can_configure else {}),
             "settings": {k: cfg[k] for k in MACHINE_SETTINGS - {"turn_pass", "turn_secret"}} if can_configure else {},
             "turn_secret_set": can_configure and bool(cfg["turn_secret"]),
             "turn_password_set": can_configure and bool(cfg["turn_pass"]),
             "incoming_default": agent.incoming_dir() if can_configure else "",
-            "autostart": bool(W.autostart_get()) if can_configure and WIN else False,
+            "autostart": bool(W.autostart_get()) if can_configure and WIN and not getattr(agent, "portable", False) else False,
             "admin": admin,
         })
 
@@ -361,6 +377,10 @@ def make_app(agent, port, on_quit):
 
     async def update_install(req):
         need_local_admin(req)
+        request = await req.json() if req.can_read_body else {}
+        if "expected_target" in request and request["expected_target"] != update_target():
+            return web.json_response({"error": "La copia attiva è cambiata. Aggiorna la console e verifica di nuovo la cartella."},
+                                     status=409)
         if not agent.updater.available():
             await agent.updater.check()
         if not agent.updater.available():
@@ -475,6 +495,8 @@ def make_app(agent, port, on_quit):
 
     async def autostart(req):
         need_local_admin(req)
+        if getattr(agent, "portable", False):
+            return web.json_response({"error": "Avvio automatico di Windows non disponibile per questa copia portabile."}, status=403)
         b = await req.json()
         if not WIN:
             return err("solo Windows")
@@ -483,6 +505,8 @@ def make_app(agent, port, on_quit):
 
     async def service(req):
         need_local_admin(req)
+        if getattr(agent, "portable", False):
+            return web.json_response({"error": "Gestione del servizio Windows non disponibile per questa copia portabile."}, status=403)
         b = await req.json()
         if not WIN:
             return err("La modalita' servizio e' disponibile solo su Windows")
@@ -633,6 +657,7 @@ def make_app(agent, port, on_quit):
     r.add_post("/api/session/ice", session_ice)
     r.add_post("/api/refresh", refresh)
     r.add_post("/api/update/check", update_check)
+    r.add_get("/api/update/local", update_local)
     r.add_post("/api/update/install", update_install)
     r.add_post("/api/machines/update", machine_update)
     r.add_post("/api/session/lease", session_lease)

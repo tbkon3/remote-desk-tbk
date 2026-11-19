@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 import unittest
+from collections import defaultdict
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -58,6 +59,69 @@ class WebAuthIntegration(unittest.IsolatedAsyncioTestCase):
         self.agent.close_sessions.assert_awaited_once_with("A")
         self.assertEqual((await self.dispatch("POST", "/api/settings", headers, {})).status, 403)
         self.assertEqual((await self.dispatch("POST", stop, {**headers, "Origin": "http://127.0.0.1:47801"}, {})).status, 403)
+
+    async def test_update_target_is_private_and_portable_controls_do_not_touch_windows(self):
+        owner, desktop = await self.browser("owner"), await self.browser("desktop")
+        portable_dir, service_dir = r"C:\fixture\portable", r"C:\fixture\managed"
+        self.agent.cfg = defaultdict(str, name="fixture", id="111222333")
+        self.agent.nets, self.agent.sessions, self.agent.events = {}, {}, []
+        self.agent.data_dir, self.agent.cloned = "data-fixture", False
+        self.agent.logged_user = lambda: "fixture"
+        self.agent.incoming_dir = lambda: "fixture-shared"
+        self.agent.updater = Mock()
+        self.agent.updater.status.return_value = {"current":"1", "latest":"2", "error":portable_dir, "auto":True}
+        self.enterContext(patch("rd.web.ROOT_DIR", portable_dir))
+        self.enterContext(patch("rd.web.INSTALL_DIR", service_dir))
+        marker = self.enterContext(patch("rd.web.service_installed", return_value=True))
+        elevate = self.enterContext(patch("rd.web.svc.elevate"))
+        from rd import web as console_web
+        if console_web.WIN:
+            autorun = self.enterContext(patch.object(console_web.W, "autostart_set"))
+        for portable, service, mode, location in ((True, False, "portable", portable_dir),
+                                                  (False, True, "service", service_dir),
+                                                  (False, False, "user", portable_dir)):
+            self.agent.portable, self.agent.service_mode = portable, service
+            response = await self.dispatch("GET", "/api/update/local", owner)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.text)["update_target"], {"mode":mode, "path":location})
+            self.assertEqual((await self.dispatch("GET", "/api/update/local", desktop)).status, 403)
+            public = await self.dispatch("GET", "/api/public", desktop)
+            data = json.loads(public.text)
+            self.assertNotIn("update_target", data)
+            self.assertNotIn("error", data["update"])
+            self.assertEqual(data["service"]["installed"], not portable)
+            if portable:
+                marker.assert_not_called()
+                self.assertNotIn("auto_update", self.agent.cfg)
+                setting = await self.dispatch("POST", "/api/settings", owner, {"auto_update":True})
+                self.assertEqual(setting.status, 200)
+                self.assertIs(self.agent.cfg["auto_update"], True)
+                for route in ("/api/service", "/api/autostart"):
+                    self.assertEqual((await self.dispatch("POST", route, owner, {})).status, 403)
+                elevate.assert_not_called()
+                if console_web.WIN:
+                    autorun.assert_not_called()
+        mismatch = await self.dispatch("POST", "/api/update/install", owner,
+                                       {"expected_target":{"mode":"service", "path":service_dir}})
+        self.assertEqual(mismatch.status, 409)
+        self.agent.updater.install.assert_not_called()
+        network = Mock()
+        network.name = "fixture"
+        network.reg.version = 1
+        network.reg.machines.return_value = {}
+        network.reg.users.return_value = {}
+        network.reg.is_admin.side_effect = lambda user: user == "admin"
+        self.agent.nets = {"n":network}
+        self.agent.get_login = lambda token, **kwargs: {"n":{"user":token}} if token in ("admin","viewer") else {}
+        self.agent.is_any_admin = lambda grants: (grants.get("n") or {}).get("user") == "admin"
+        self.assertEqual((await self.dispatch("GET", "/api/update/local", owner)).status, 403)
+        for identity, user, visible in ((owner,"admin",True),(desktop,"admin",False),(owner,"viewer",False)):
+            headers = {**identity, "X-RD-Login":user}
+            self.agent.portable = True
+            response = await self.dispatch("GET", "/api/state", headers)
+            self.assertEqual(response.status, 200)
+            self.assertEqual("update_target" in json.loads(response.text), visible)
+            self.assertEqual("local_update" in json.loads(response.text), visible)
 
     async def test_real_logout_drops_grants_and_clears_browser_header(self):
         headers = await self.browser("desktop")

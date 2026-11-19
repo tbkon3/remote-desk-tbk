@@ -1,4 +1,4 @@
-"""Windows CI smoke for the 2.4.0 artifact. Run: python tests/smoke_release_bundle.py <zip>."""
+"""Launch an isolated Windows package. Run: python tests/smoke_release_bundle.py ZIP [--version VERSION]."""
 import argparse
 import ctypes as ct
 import hashlib
@@ -155,7 +155,7 @@ def owner_headers(local_access, port, data, method, path):
     return headers
 
 
-def probe(root, data, port):
+def probe(root, data, port, version):
     # This branch is invoked by the Python executable INSIDE the candidate ZIP.
     root = root.resolve(strict=True)  # hosted runners can supply an 8.3 alias for %TEMP%
     runtime = (root / "runtime").resolve(strict=True)
@@ -167,7 +167,7 @@ def probe(root, data, port):
         require(origin.is_relative_to(runtime), f"Dependency outside artifact: {name}: {origin} (expected under {runtime})")
     from PIL import Image
     from rd import common, local_access
-    require(common.VERSION == VERSION, "Incorrect package version")
+    require(common.VERSION == version, "Incorrect package version")
     # The probe never reads service credentials from ProgramData, even if the socket disappears.
     common.PROGRAM_DATA = str(data)
     for name in ("icon.png", "icon-active.png"):
@@ -180,7 +180,7 @@ def probe(root, data, port):
         status, raw = local_request(port, "GET", "/api/public", headers)
         require(status == 200, "Native authenticated GET failed")
         state = json.loads(raw)
-        require(state["version"] == VERSION and state["me"]["id"] == FIXTURE_ID and state["me"]["name"] == FIXTURE_NAME,
+        require(state["version"] == version and state["me"]["id"] == FIXTURE_ID and state["me"]["name"] == FIXTURE_NAME,
                 "Agent did not load the candidate version and the private fixture")
         require(state["networks"] == [] and state["sessions"] == [] and not state["service"]["active"], "Unexpected active configuration")
         routes = {**PAGES, **{"/web/" + asset: asset for asset in ASSETS}}
@@ -192,7 +192,7 @@ def probe(root, data, port):
         require(local_request(port, "POST", "/api/quit", quit_headers)[0] == 200, "Authenticated fixture shutdown failed")
 
 
-def smoke(archive):
+def smoke(archive, version=VERSION):
     require(sys.platform == "win32", "Run this test on Windows")
     # Validate every archive member via checkout code before importing or running anything in the ZIP.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
@@ -223,18 +223,20 @@ def smoke(archive):
                 require(time.monotonic() < end, "Agent did not bind its loopback port within 30 seconds")
                 time.sleep(0.1)
             subprocess.run([root / "runtime/python.exe", "-I", "-B", Path(__file__).resolve(), "--probe",
-                            str(root), str(data), str(port)], cwd=work, env=env, check=True, timeout=35)
+                            str(root), str(data), str(port), version], cwd=work, env=env, check=True, timeout=35)
             end = time.monotonic() + 10
             while active():
                 require(time.monotonic() < end, "Fixture did not exit after authenticated shutdown")
                 time.sleep(0.1)
-    print("RemoteDesk 2.4.0 Windows bundle smoke passed")
+    print(f"RemoteDesk {version} Windows bundle smoke passed")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 5 and sys.argv[1] == "--probe":
-        probe(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))
+    if len(sys.argv) == 6 and sys.argv[1] == "--probe":
+        probe(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]), sys.argv[5])
     else:
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("archive", type=Path)
-        smoke(parser.parse_args().archive.resolve())
+        parser.add_argument("--version", choices=(VERSION, "2.4.1"), default=VERSION)
+        args = parser.parse_args()
+        smoke(args.archive.resolve(), args.version)

@@ -1,4 +1,4 @@
-REMOTEDESK 2.4.0 PER WINDOWS 64 BIT
+REMOTEDESK 2.4.1 PORTABILE PER WINDOWS 64 BIT
 
 Questo pacchetto contiene RemoteDesk.exe, il runtime Python per Windows e la
 cartella app. Estrai su ogni PC una copia dello ZIP originale. Conserva i dati e
@@ -6,16 +6,16 @@ le chiavi di ciascuna postazione nel relativo profilo.
 
 PRIMA DI AVVIARE
 
-Scarica RemoteDesk-2.4.0.zip e RemoteDesk-2.4.0.zip.sha256 dal canale di
+Scarica RemoteDesk-2.4.1.zip e RemoteDesk-2.4.1.zip.sha256 dal canale di
 distribuzione autorizzato. In PowerShell, dalla cartella del download, esegui
 
-  Get-FileHash -Algorithm SHA256 -LiteralPath .\RemoteDesk-2.4.0.zip
-  Get-Content -LiteralPath .\RemoteDesk-2.4.0.zip.sha256
+  Get-FileHash -Algorithm SHA256 -LiteralPath .\RemoteDesk-2.4.1.zip
+  Get-Content -LiteralPath .\RemoteDesk-2.4.1.zip.sha256
 
 I 64 caratteri esadecimali dei due risultati devono coincidere. In caso di
 differenze interrompi l'installazione. Se un controllo di Windows o dell'azienda
 blocca l'avvio, chiedi all'amministratore della postazione di verificare il
-pacchetto. Dopo l'avvio controlla in Impostazioni che la console riporti 2.4.0.
+pacchetto. Dopo l'avvio controlla in Impostazioni che la console riporti 2.4.1.
 La scheda Dettagli di RemoteDesk.exe riporta 2.3.2 perché il pacchetto include
 l'avviatore originale. La console mostra la versione del programma avviato.
 
@@ -29,6 +29,16 @@ PRIMO AVVIO E REGISTRAZIONE
    chiave e credenziali di un amministratore. Almeno un PC già iscritto deve
    essere raggiungibile. Un tecnico accede poi con il proprio account operatore.
 
+COPIA PORTABILE
+
+Estrai la cartella RemoteDesk dove il tuo account può conservare e aggiornare
+il programma. La copia portabile apre una propria console locale. Puoi usarla
+anche su un PC con il servizio Windows già installato. Per una nuova identità
+portabile il percorso dati predefinito è %LOCALAPPDATA%\RemoteDesk\portable\data.
+Per una copia già esistente, conserva il suo profilo e gli eventuali parametri
+--data del collegamento. Chiudi le sessioni e la copia attiva prima del cambio
+di versione. Dopo il riavvio verifica la versione e l'ID nella console.
+
 PASSAGGIO DALLA 2.3.2
 
 La 2.4.0 usa il protocollo di sessione 2. Concorda una finestra di manutenzione,
@@ -36,12 +46,13 @@ prevedi un accesso locale o tramite lo strumento di distribuzione aziendale
 e chiudi le sessioni 2.3.2. Aggiorna il PC del tecnico e quello assistito.
 
 1. Conserva un backup protetto dei dati di ciascuna macchina e mantienilo
-   associato a quel PC. In modalità utente il percorso è
+   associato a quel PC. Nella modalità utente storica il percorso predefinito è
    %LOCALAPPDATA%\RemoteDesk\data. In modalità servizio è
    %ProgramData%\RemoteDesk\data.
-2. In modalità utente chiudi RemoteDesk dall'icona ed estrai la 2.4.0 in una
-   nuova cartella. Avviala dallo stesso account Windows, verifica ID, reti e
-   versione nella console, poi aggiorna eventuali collegamenti di avvio.
+2. Per mantenere l'identità della copia utente esistente, usa l'aggiornamento
+   integrato con il feed stabile firmato. Se avvii una copia estratta a mano,
+   verifica il profilo prima di registrare il PC. Quando è presente un servizio,
+   la copia portabile può richiedere una registrazione separata.
 3. Per un servizio installato, incarica l'amministratore Windows di aggiornare
    la copia protetta in %ProgramFiles%\RemoteDesk durante la manutenzione e di
    verificarne il riavvio. L'avvio della sola copia portabile non aggiorna la
@@ -96,7 +107,7 @@ identificano il percorso. Fai una prova tra due connessioni indipendenti.
 
 ISTRUZIONI E ARCHIVIO
 
-Manuale 2.4.0 e note di versione
+Manuale e note di versione
 https://github.com/tbkon3/remote-desk-tbk/blob/main/README.md
 https://github.com/tbkon3/remote-desk-tbk/blob/main/CHANGELOG.md
 

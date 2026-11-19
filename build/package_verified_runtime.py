@@ -1,4 +1,4 @@
-"""Build an unsigned 2.4.0 candidate from Git objects and the signed 2.3.2 runtime."""
+"""Build an unsigned Windows package from committed sources and the signed 2.3.2 runtime."""
 import argparse
 import ast
 import base64
@@ -23,6 +23,7 @@ RELEASE_PUB = "jcnWg1NX5p1JIB/bSvlcKQZjzrT+xb8WoVdxFJ+noVQ="
 BASE_FILE = "RemoteDesk-2.3.2.zip"
 VERSION = "2.4.0"
 FILE = f"RemoteDesk-{VERSION}.zip"
+VERSIONS = (VERSION, "2.4.1")
 FEED = "https://raw.githubusercontent.com/tbkon3/remote-desk-tbk/main/dist/"
 ABI_INPUTS = ("requirements.txt", "build/requirements-windows.txt", "build/launcher.c",
               "build/launcher.rc", "build/icon.ico", "build/icon256.png")
@@ -47,7 +48,9 @@ def constant(data, name):
             and any(isinstance(t, ast.Name) and t.id == name for t in stmt.targets)]
 
 
-def source_files(repo, ref):
+def source_files(repo, ref, version=VERSION):
+    if version not in VERSIONS:
+        raise ValueError("Versione di destinazione non supportata")
     if not re.fullmatch("[0-9a-f]{40}", ref) or git(repo, "rev-parse", "HEAD").decode().strip() != ref:
         raise ValueError("Il sorgente deve corrispondere allo SHA completo del checkout")
     git(repo, "merge-base", "--is-ancestor", BASE, ref)
@@ -59,8 +62,10 @@ def source_files(repo, ref):
             raise ValueError("Versione runtime Python incompatibile")
         if constant(blob(repo, rev, "app/rd/update.py"), "RELEASE_PUB") != [RELEASE_PUB]:
             raise ValueError("Chiave pubblica dell'updater differente")
-    if constant(blob(repo, ref, "app/rd/common.py"), "VERSION") != [VERSION]:
+    if constant(blob(repo, ref, "app/rd/common.py"), "VERSION") != [version]:
         raise ValueError("Versione applicativa incompatibile")
+    if constant(blob(repo, ref, "app/rd/update.py"), "DEFAULT_URL") != [FEED + "latest.json"]:
+        raise ValueError("Il feed predefinito deve essere quello stabile")
     objects = {}
     listing = git(repo, "ls-tree", "-r", "-l", "-z", ref, "--", "app", "build/LEGGIMI.txt")
     size_total = 0
@@ -168,7 +173,7 @@ def assemble(repo, old_path, objects, output):
         validate_names(finished.infolist())
 
 
-def build(repo, ref, output, issued, expires):
+def build(repo, ref, output, issued, expires, version=VERSION):
     now = int(time.time())
     if issued > now + 300 or expires <= now or not 0 < expires - issued <= 31 * 86400:
         raise ValueError("Finestra temporale del manifesto non valida")
@@ -178,7 +183,8 @@ def build(repo, ref, output, issued, expires):
         raise ValueError("Usare una directory esterna al checkout o target/")
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError("La directory di uscita deve essere nuova o vuota")
-    objects = source_files(repo, ref)
+    objects = source_files(repo, ref, version)
+    filename = f"RemoteDesk-{version}.zip"
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent) as work:
         old = Path(work) / BASE_FILE
@@ -187,14 +193,16 @@ def build(repo, ref, output, issued, expires):
         verify_baseline(blob(repo, BASE, "dist/latest.json"), old)
         stage = Path(work) / "result"
         stage.mkdir()
-        package = stage / FILE
+        package = stage / filename
         assemble(repo, old, objects, package)
         with package.open("rb") as handle:
             digest = hashlib.file_digest(handle, "sha256").hexdigest()
-        (stage / "SHA256SUMS").write_bytes(f"{digest}  {FILE}\n".encode("ascii"))
-        body = dict(version=VERSION, file=FILE, url=FEED + FILE, size=package.stat().st_size, sha256=digest,
+        (stage / "SHA256SUMS").write_bytes(f"{digest}  {filename}\n".encode("ascii"))
+        notes = NOTES if version == VERSION else (
+            "Aggiornamento del pacchetto portabile per Windows. Chiudere le sessioni prima del riavvio.")
+        body = dict(version=version, file=filename, url=FEED + filename, size=package.stat().st_size, sha256=digest,
                     issued=issued, expires=expires, date=datetime.fromtimestamp(issued, timezone.utc).date().isoformat(),
-                    notes=NOTES)
+                    notes=notes)
         (stage / "latest.unsigned.json").write_bytes((json.dumps(body, indent=2, ensure_ascii=False) + "\n").encode())
         if output.exists():
             output.rmdir()  # Requires an empty directory, including if another builder raced us.
@@ -204,10 +212,12 @@ def build(repo, ref, output, issued, expires):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", choices=VERSIONS, default=VERSION)
     parser.add_argument("--source-ref", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--issued-at", type=int, required=True)
     parser.add_argument("--expires-at", type=int)
     args = parser.parse_args()
     expires = args.expires_at if args.expires_at is not None else args.issued_at + 30 * 86400
-    print(json.dumps(build(Path(__file__).resolve().parents[1], args.source_ref, args.output_dir, args.issued_at, expires)))
+    print(json.dumps(build(Path(__file__).resolve().parents[1], args.source_ref, args.output_dir,
+                           args.issued_at, expires, args.version)))
