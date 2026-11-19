@@ -22,6 +22,7 @@ CANDIDATE_HASH = "3e58471929b5e4144c47be617689c2cd5498b6008115e00f6bfb9d8fb803f9
 PRIVATE = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 USERS = "S-1-5-32-545"
 SID_ADMIN = "S-1-5-32-544"
+LEGACY_ACE = {"sid": USERS, "mask": 0x116, "type": 0, "flags": 0x12}
 
 
 def snapshot(parent):
@@ -73,14 +74,36 @@ def historical_parent(seed, target, marker):
     # Reproduce the inheritable entry under our own NTFS ancestor. Renaming on the same
     # volume preserves the child descriptor. Never edit the actual ProgramData ACL.
     ancestor = seed / "seed"
-    fixture.create_owned(ancestor, PRIVATE + "(A;OICI;0x1200a9;;;BU)(A;CIIO;0x116;;;BU)", marker)
+    access = PRIVATE + "(A;OICI;0x1200a9;;;BU)(A;CIIO;0x116;;;BU)"
+    fixture.create_owned(ancestor, PRIVATE, marker)
     child = ancestor / "RemoteDesk"
     child.mkdir()
     fixture.require(plain_path(child).is_dir() and not os.path.lexists(target), "Cartella dati già presente")
     child_id = (child.stat().st_dev, child.stat().st_ino)
     fixture.require(child_id[1] != 0 and child_id[0] == target.parent.stat().st_dev, "Richiesto rename sul medesimo NTFS")
+    # Set the expected owner while the child is still under the seed. Updating the seed
+    # DACL after creating the child invokes NTFS automatic propagation, including the
+    # INHERITED_ACE flag. Supplying an ACL only at seed creation can leave legacy flags.
+    fixture.powershell(r"""
+$seed = [IO.DirectoryInfo]::new($env:RD_SEED)
+$child = [IO.DirectoryInfo]::new([IO.Path]::Combine($seed.FullName,'RemoteDesk'))
+$owner = $child.GetAccessControl([Security.AccessControl.AccessControlSections]::Owner)
+$owner.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+$child.SetAccessControl($owner)
+$section = [Security.AccessControl.AccessControlSections]::Access
+$acl = $seed.GetAccessControl($section)
+$acl.SetSecurityDescriptorSddlForm($env:RD_SEED_ACL,$section)
+$seed.SetAccessControl($acl)
+""", dict(os.environ, RD_SEED=str(ancestor), RD_SEED_ACL=access))
+    assert_historical_parent(snapshot(child), "figlio del seed NTFS")
     child.rename(target)
     return child_id
+
+
+def assert_historical_parent(state, phase):
+    fixture.require(not state["protected"] and state["owner"] == SID_ADMIN
+                    and state["entries"].count(LEGACY_ACE) == 1,
+                    f"Descrittore storico assente ({phase}): {state['sddl']}")
 
 
 @contextmanager
@@ -219,7 +242,7 @@ def exercise(old, new, temp):
         (data / "config.json").write_text('{"id":"321654987","networks":[],"update_url":"","auto_update":false}', encoding="ascii")
         (data / "machine.key").write_text(secrets.token_urlsafe(32), encoding="ascii")
         (data / "logs/update.log").write_text("file di prova\n", encoding="ascii")
-        fixture.run([system_tool("icacls.exe"), parent, "/setowner", "*" + SID_ADMIN, "/T", "/Q"])
+        fixture.run([system_tool("icacls.exe"), data, "/setowner", "*" + SID_ADMIN, "/T", "/Q"])
         xml = fixture.make_xml(installed, data, temp, marker)
         fixture.task_absent()
         fixture.run([task, "/Create", "/TN", "RemoteDesk", "/XML", xml])
@@ -227,15 +250,13 @@ def exercise(old, new, temp):
         original_task = fixture.inspect_task(marker)
         with owned_registry(marker):
             original = snapshot(parent)
-            legacy_ace = {"sid": USERS, "mask": 0x116, "type": 0, "flags": 0x12}  # CI + INHERITED
-            fixture.require(not original["protected"] and original["owner"] == SID_ADMIN and original["entries"].count(legacy_ace) == 1,
-                            "Il filesystem del runner non ha riprodotto l'ACE 0x116 ereditata")
+            assert_historical_parent(original, "dopo il rename e la preparazione dei dati")
             preflight(new, data, installed, temp, before=True)
             run_repair(False, "REPAIRABLE")
             fixture.require(snapshot(parent) == original and fixture.inspect_task(marker) == original_task, "Il check ha modificato lo stato")
             run_repair(True, "REPAIRED")
             repaired = snapshot(parent)
-            wanted = [dict(entry, flags=entry["flags"] & ~0x10) for entry in original["entries"] if entry != legacy_ace]
+            wanted = [dict(entry, flags=entry["flags"] & ~0x10) for entry in original["entries"] if entry != LEGACY_ACE]
             fixture.require(repaired["protected"] and repaired["entries"] == wanted and repaired["owner"] == original["owner"]
                             and repaired["group"] == original["group"] and repaired["tree"] == original["tree"],
                             "La riparazione ha modificato diritti o file estranei all'ACE storica")
