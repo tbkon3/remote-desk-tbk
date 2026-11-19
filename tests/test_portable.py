@@ -26,7 +26,7 @@ class PortableIdentity(unittest.TestCase):
         for name, value in (("PROGRAM_DATA", str(self.service)), ("INSTALL_DIR", str(self.installed))):
             self.enterContext(patch.object(portable, name, value))
         self.enterContext(patch.object(portable, "default_profile", return_value=self.default))
-        self.registered = self.enterContext(patch.object(portable, "service_installed", return_value=False))
+        self.registered = self.enterContext(patch.object(portable, "_service_may_own_legacy", return_value=False))
         self.autostart = self.enterContext(patch.object(portable, "_legacy_autostart", return_value=False))
         self.inactive = self.enterContext(patch.object(portable, "_legacy_inactive", return_value=True))
         self.actor = self.enterContext(patch.object(portable, "current_logon", return_value="user/logon-A"))
@@ -65,6 +65,14 @@ class PortableIdentity(unittest.TestCase):
         with portable.Instance(self.tmp / "Altra") as moved:
             self.assertTrue(moved.owner)
             self.assertEqual(moved.profile, self.default)
+
+    @unittest.skipUnless(os.name == "nt", "Registro Windows")
+    def test_inaccessible_service_registration_makes_an_old_profile_ambiguous(self):
+        import winreg
+        with patch.object(winreg, "OpenKey", side_effect=PermissionError):
+            self.assertTrue(_real_service_check())
+        with patch.object(winreg, "OpenKey", side_effect=FileNotFoundError):
+            self.assertFalse(_real_service_check())
 
     def test_valid_legacy_receipt_preserves_one_identity_but_never_adopts_service_identity(self):
         self.legacy.mkdir(parents=True)
@@ -254,3 +262,4 @@ class PortableIdentity(unittest.TestCase):
 
 
 _real_listener = portable._listener
+_real_service_check = portable._service_may_own_legacy

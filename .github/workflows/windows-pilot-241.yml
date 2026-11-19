@@ -49,11 +49,13 @@ jobs:
       - if: steps.mode.outputs.mode != 'skip'
         run: python -m pip install cryptography==46.0.3
       - name: Confeziona i sorgenti del commit con il runtime autenticato
+        id: candidate
         if: steps.mode.outputs.mode == 'build'
         shell: pwsh
         run: |
           python build/package_verified_runtime.py --version 2.4.1 --source-ref $env:GITHUB_SHA --output-dir "$env:RUNNER_TEMP/remotedesk-pilot" --issued-at $([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
       - name: Verifica firma Ed25519, destinazione, scadenza, hash e dimensione della pubblicazione
+        id: signed
         if: steps.mode.outputs.mode == 'verify'
         run: python tests/verify_release_feed.py --version 2.4.1
       - name: Verifica il launcher, la versione attiva e la console su loopback
@@ -63,7 +65,7 @@ jobs:
           $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-pilot/RemoteDesk-2.4.1.zip" } else { 'dist/RemoteDesk-2.4.1.zip' }
           python tests/smoke_release_bundle.py $zip --version 2.4.1
       - name: Aggiorna una copia portabile 2.4.0 in un percorso personalizzato
-        if: steps.mode.outputs.mode != 'skip'
+        if: ${{ !cancelled() && (steps.candidate.outcome == 'success' || steps.signed.outcome == 'success') }}
         shell: pwsh
         run: |
           $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-pilot/RemoteDesk-2.4.1.zip" } else { 'dist/RemoteDesk-2.4.1.zip' }
@@ -71,7 +73,7 @@ jobs:
           if ('${{ steps.mode.outputs.mode }}' -eq 'verify') { $manifestArgs = @('--candidate-manifest', 'dist/latest.json') }
           python tests/smoke_portable_custom.py --legacy-zip dist/RemoteDesk-2.4.0.zip --candidate-zip $zip --version 2.4.1 @manifestArgs
       - name: Aggiorna la copia portabile 2.3.2 con una seconda istanza su loopback
-        if: steps.mode.outputs.mode != 'skip'
+        if: ${{ !cancelled() && (steps.candidate.outcome == 'success' || steps.signed.outcome == 'success') }}
         shell: pwsh
         run: |
           $zip = if ('${{ steps.mode.outputs.mode }}' -eq 'build') { "$env:RUNNER_TEMP/remotedesk-pilot/RemoteDesk-2.4.1.zip" } else { 'dist/RemoteDesk-2.4.1.zip' }

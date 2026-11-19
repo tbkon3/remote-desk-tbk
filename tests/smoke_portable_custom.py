@@ -220,7 +220,7 @@ def instance(data, target):
     return state["port"]
 
 
-async def browser_state(endpoint, port, name, version):
+async def browser_state(endpoint, port, target_root, name, version):
     import aiohttp
     async with aiohttp.ClientSession(trust_env=False) as client:
         deadline = time.monotonic() + 35
@@ -246,13 +246,20 @@ async def browser_state(endpoint, port, name, version):
                         require("error" not in result, "Headless browser rejected " + method)
                         return result["result"]
 
-            expression = "([location.port,document.querySelector('#meName')?.textContent,document.querySelector('#ver')?.textContent])"
+            # This offline device has no network login. The welcome view renders the
+            # owner-only installed version and actual update destination for this copy.
+            expression = """([location.port,document.querySelector('#meName')?.textContent,
+                document.querySelector('#welcomeUpdateStatus')?.textContent,document.querySelector('#welcomeTarget')?.textContent,
+                !!document.querySelector('#welcomeUpdates')?.getClientRects().length])"""
             deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
                 result = await command("Runtime.evaluate", {"expression": expression, "returnByValue": True})
                 values = result.get("result", {}).get("value", [])
-                if values == [str(port), name + " - ID di questo PC", "RemoteDesk " + version]:
-                    return
+                if len(values) == 5 and values[0:2] == [str(port), name + " - ID di questo PC"] and values[4]:
+                    label, sep, path = (values[3] or "").partition(" · ")
+                    if (values[2] or "").startswith("Versione installata " + version) and label == "Copia portabile" and sep:
+                        require(Path(path).resolve() == target_root, "Console displays the wrong update destination")
+                        return
                 await asyncio.sleep(.2)
             raise RuntimeError("Rendered console did not show the expected portable device, port and version")
 
@@ -422,7 +429,7 @@ def worker(work, version):
             with private_launcher(target / "RemoteDesk.exe", ["--no-tray"], env) as portable_active:
                 port = until(portable_active, lambda: instance(profile, target), "default portable instance")
                 public(profile, port, version, name, device)
-                asyncio.run(asyncio.wait_for(browser_state(endpoint, port, name, version), timeout=70))
+                asyncio.run(asyncio.wait_for(browser_state(endpoint, port, target, name, version), timeout=70))
                 public(other_data, 47800, "2.4.0", other_name, other_id)
                 quit_fixture(profile, port)
         require(member_hashes(other) == original and old_keys == tuple(support.digest(other_data / f)

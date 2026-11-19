@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from ctypes import wintypes as wt
 
 
@@ -198,18 +198,24 @@ def smoke(archive, version=VERSION):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
     from rd.release_package import MAX_PACKAGE, extract_package
     require(0 < archive.stat().st_size <= MAX_PACKAGE, "Invalid archive size")
-    with tempfile.TemporaryDirectory(prefix="RemoteDesk smoke ") as directory:
-        work = Path(directory)
+    with ExitStack() as stack:
+        work = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="RemoteDesk smoke ")))
         root = Path(extract_package(archive, work / "extracted package"))
         require({p.name for p in root.iterdir()} == {"RemoteDesk.exe", "runtime", "app", "LEGGIMI.txt"}, "Unexpected top-level package contents")
         verify_launcher(root / "RemoteDesk.exe")
-        profile = work / "isolated profile"
-        data = profile / "agent data"
-        profile.mkdir()
         if version == "2.4.1":
+            # RUNNER_TEMP can be shared. The test profile uses the OS-selected private
+            # LocalAppData, just as the production portable launcher does.
+            from rd.common import known_folder
             from rd.portable_storage import private_dir
+            profile = Path(stack.enter_context(tempfile.TemporaryDirectory(
+                dir=known_folder(0x1c), prefix="RemoteDesk smoke ")))
+            data = profile / "agent data"
             private_dir(data)
         else:
+            profile = work / "isolated profile"
+            data = profile / "agent data"
+            profile.mkdir()
             data.mkdir()
         config = {"id": FIXTURE_ID, "name": FIXTURE_NAME, "security_defaults": 1, "update_url": "", "auto_update": False,
                   "network": "", "networks": [], "known": {}, "signal": "", "stun": [], "turn_url": "", "accept_incoming": False}

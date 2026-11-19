@@ -9,7 +9,7 @@ import re
 import socket
 from contextlib import ExitStack
 
-from .common import DEFAULT_PORT, INSTALL_DIR, PROGRAM_DATA, VERSION, known_folder, service_installed, write_private
+from .common import DEFAULT_PORT, INSTALL_DIR, PROGRAM_DATA, VERSION, known_folder, write_private
 from .portable_storage import private_dir
 
 
@@ -63,6 +63,22 @@ def _legacy_autostart(root):
     command = autostart_get()
     expected = f'"{Path(root) / "RemoteDesk.exe"}" --minimized'
     return isinstance(command, str) and command.casefold() == expected.casefold()
+
+
+def _service_may_own_legacy():
+    if os.name != "nt":
+        return False
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\RemoteDesk", 0,
+                            winreg.KEY_QUERY_VALUE | winreg.KEY_WOW64_64KEY) as key:
+            value, kind = winreg.QueryValueEx(key, "Service")
+        return kind != winreg.REG_DWORD or value != 0
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # If the service registration is unreadable its historical key is ambiguous.
+        return True
 
 
 def _legacy_inactive():
@@ -176,7 +192,7 @@ class Instance:
         default = default_profile()
         self.base = default.parent
         self.legacy = self.base.parent / "data"
-        self.registered = service_installed()
+        self.registered = _service_may_own_legacy()
         self.override = override
         self.profile = Path(os.path.abspath(override)) if override else default
         self.actor = current_logon()

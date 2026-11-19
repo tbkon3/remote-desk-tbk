@@ -512,6 +512,50 @@ def _portable_args(raw, data):
     return [*extra, "--minimized", "--data", str(data)]
 
 
+@contextmanager
+def _copy_instance(target, data):
+    if __package__:
+        from .portable import Instance
+    else:
+        sys.path.insert(0, str(Path(__file__).parents[1]))
+        try:
+            from rd.portable import Instance
+        finally:
+            sys.path.pop(0)
+    with Instance(target, str(data)) as lock:
+        if not lock.owner:
+            raise RuntimeError("La copia o il profilo sono in uso; chiudere l'istanza prima del recupero")
+        yield
+
+
+def _protect_new_component(path):
+    """Freeze the private staging DACL before moving a newly created component."""
+    if os.name != "nt":
+        return
+    from ctypes import wintypes
+    scope = _file_scope()
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    ptr = ctypes.c_void_p
+    adv.GetSecurityInfo.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD,
+                                    ptr, ptr, ctypes.POINTER(ptr), ptr, ctypes.POINTER(ptr)]
+    adv.SetSecurityInfo.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD, ptr, ptr, ptr, ptr]
+    scope._k32.LocalFree.argtypes = [ptr]
+    handle = scope._k32.CreateFileW(str(path), 0x60000, 1, None, 3, 0x02200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    descriptor, dacl = ptr(), ptr()
+    try:
+        status = adv.GetSecurityInfo(handle, 1, 4, None, None, ctypes.byref(dacl), None, ctypes.byref(descriptor))
+        if status or not dacl:
+            raise PermissionError("Impossibile leggere i permessi del componente preparato")
+        if adv.SetSecurityInfo(handle, 1, 0x80000004, None, None, dacl, None):
+            raise PermissionError("Impossibile proteggere i permessi del componente preparato")
+    finally:
+        if descriptor:
+            scope._k32.LocalFree(descriptor)
+        scope._k32.CloseHandle(handle)
+
+
 def _regular_copy(source, destination):
     if os.name == "nt":
         import msvcrt
@@ -641,6 +685,7 @@ def _prepare_members(target, source, job):
         if exists is None:
             raise ValueError(f"Pacchetto incompleto: {name}")
         _copy_member(source / name, candidate / name, name in ("app", "runtime"))
+        _protect_new_component(candidate / name)
         new[name] = _identity(candidate, name)
         if name == "RemoteDesk.exe" and old[name] is not None:
             import hashlib
@@ -728,20 +773,21 @@ def _exchange_members(target, meta, source, data, args, job):
     _wait_old_portable(ARGS.pid, target)
     receipt = {"target": os.path.normcase(str(target)), "version": ARGS.version, "nonce": secrets.token_hex(32)}
     pending, ready = (Path(_receipt_path(data, key)) for key in ("pending", "ready"))
-    state["phase"] = "swapping"
-    state["receipt"] = receipt
-    _write_receipt(journal, state)
     process = None
     try:
-        _write_receipt(pending, receipt)
-        for name in MANAGED:
-            if state["new"][name] == state["old"][name]:
-                if _identity(target, name) != state["old"][name]:
-                    raise PermissionError("Avviatore attivo modificato")
-                continue
-            if state["old"][name] is not None:
-                _move_member(target, job / "previous", name, state["old"][name])
-            _move_member(job / "candidate", target, name, state["new"][name])
+        with _copy_instance(target, data):
+            state["phase"] = "swapping"
+            state["receipt"] = receipt
+            _write_receipt(journal, state)
+            _write_receipt(pending, receipt)
+            for name in MANAGED:
+                if state["new"][name] == state["old"][name]:
+                    if _identity(target, name) != state["old"][name]:
+                        raise PermissionError("Avviatore attivo modificato")
+                    continue
+                if state["old"][name] is not None:
+                    _move_member(target, job / "previous", name, state["old"][name])
+                _move_member(job / "candidate", target, name, state["new"][name])
         process = _start_portable(target, args)
         for _ in range(240):
             if _read_receipt(ready) == receipt:
@@ -755,12 +801,15 @@ def _exchange_members(target, meta, source, data, args, job):
             time.sleep(.5)
         raise RuntimeError("La nuova versione non ha confermato l'avvio")
     except Exception as exc:
+        if state["phase"] == "prepared":
+            raise
         log(f"{exc}; torno alla precedente")
         if process is not None and process.poll() is None:
             process.terminate()
             process.wait(timeout=20)
-        _rollback_members(target, job, state)
-        journal.unlink()
+        with _copy_instance(target, data):
+            _rollback_members(target, job, state)
+            journal.unlink()
         _start_portable(target, args)
         return 2
     finally:
@@ -805,7 +854,11 @@ def _portable_helper(source_path, target_path):
             state = _read_transaction(meta)
             if state and not getattr(ARGS, "recover", False) and not _transaction_complete(target, state, data):
                 raise RuntimeError(f"Chiudere la copia e usare il comando di {meta / state['id'] / 'RECUPERO.json'}")
-            _recover_portable(target, meta, data)
+            if getattr(ARGS, "recover", False):
+                with _copy_instance(target, data):
+                    _recover_portable(target, meta, data)
+            else:
+                _recover_portable(target, meta, data)
             portable_layout(target, data, INSTALL_DIR, PROGRAM_DATA)
             if getattr(ARGS, "recover", False):
                 log("Recupero completato; la copia portabile può essere avviata")
